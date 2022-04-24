@@ -1,16 +1,28 @@
+#define _LILIM_SOURCE_
 #include <algorithm>
+#include <cstring>
 #include "lilim.hpp"
 
 //Platform-specific includes
 #ifdef _WIN32
     #define  NOMINMAX
     #include <windows.h>
+#elif defined(__linux)
+    #include <sys/mman.h>
+    #include <sys/stat.h>
+    #include <unistd.h>
+    #include <fcntl.h>
 #endif
 
 LILIM_NS_BEGIN
 
 //Manager
 Manager::Manager(){
+    //Init default malloc / free
+    memory.realloc = reinterpret_cast<ReallocFunc>(std::realloc);
+    memory.malloc = reinterpret_cast<MallocFunc>(std::malloc);
+    memory.free = reinterpret_cast<FreeFunc>(std::free);
+    //Initialize freetype
     if(FT_Init_FreeType(&library)){
         //TODO: Error handling
         std::abort();
@@ -31,18 +43,18 @@ Ref<Face> Manager::new_face(Ref<Blob> blob,int index){
     ret->manager = this;
     ret->blob    = blob;
     ret->face    = face;
+    ret->idx     = index;
     return ret;
 }
 Ref<Face> Manager::new_face(const char *path,int index){
-    FT_Face face;
-    if(FT_New_Face(library,path,index,&face)){
+    //TODO : This is not a good way to do it, we should use a better way
+    //For easy implementation face clone, we use mmap to load font file
+    Ref<Blob> blob = MapFile(path);
+    if(blob.empty()){
         //Failed to load font
         return {};
     }
-    Ref<Face> ret = new Face();
-    ret->manager = this;
-    ret->face    = face;
-    return ret;
+    return new_face(blob,index);
 }
 Ref<Blob> Manager::alloc_blob(size_t size){
     void *ptr = std::malloc(size);
@@ -50,17 +62,20 @@ Ref<Blob> Manager::alloc_blob(size_t size){
         return {};
     }
     Ref<Blob> ret = new Blob(ptr,size);
-    ret->set_finalizer([](void *ptr,size_t,void*){
-        std::free(ptr);
-    },nullptr);
+    ret->set_finalizer([](void *ptr,size_t,void *manager){
+        static_cast<Manager*>(manager)->free(ptr);
+    },this);
     return ret;
 }
 
 //Face
 Face::Face(){
-    flags = FT_LOAD_DEFAULT;
+    flags = FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT;
     manager = nullptr;
     face    = nullptr;
+    xdpi    = 0;
+    ydpi    = 0;
+    idx     = 0;
 }
 Face::~Face(){
     FT_Done_Face(face);
@@ -74,22 +89,47 @@ void  Face::set_size(FaceSize size){
         size.ydpi
     );
 }
+void  Face::set_size(Uint size){
+    FT_Set_Char_Size(
+        face,
+        0,
+        size * 64,
+        xdpi,
+        ydpi
+    );
+}
 Uint  Face::glyph_index(char32_t codepoint){
     return FT_Get_Char_Index(face,codepoint);
 }
 Uint  Face::kerning(Uint prev,Uint cur){
     FT_Vector delta;
-    FT_Get_Kerning(face,prev,cur,FT_KERNING_DEFAULT,&delta);
+    FT_Error err;
+    err = FT_Get_Kerning(face,prev,cur,FT_KERNING_DEFAULT,&delta);
+    if(err){
+        //Error
+        std::abort();
+    }
     return delta.x >> 6;
 }
 auto  Face::metrics() -> FaceMetrics{
     FaceMetrics metrics;
-    metrics.ascender    = face->size->metrics.ascender >> 6;
-    metrics.descender   = face->size->metrics.descender >> 6;
-    metrics.height      = face->size->metrics.height >> 6;
-    metrics.max_advance = face->size->metrics.max_advance >> 6;
-    metrics.underline_position = face->underline_position >> 6;
-    metrics.underline_thickness = face->underline_thickness >> 6;
+    if(FT_IS_SCALABLE(face)){
+        FT_Fixed scale = face->size->metrics.y_scale;
+        metrics.ascender   = FixedCeil(FT_MulFix(face->ascender, scale));
+        metrics.descender  = FixedCeil(FT_MulFix(face->descender, scale));
+        metrics.height   = FixedCeil(FT_MulFix(face->ascender - face->descender, scale));
+        metrics.underline_position = FixedFloor(FT_MulFix(face->underline_position, scale));
+        metrics.underline_thickness = FixedFloor(FT_MulFix(face->underline_thickness, scale));
+        metrics.max_advance = face->size->metrics.max_advance >> 6;
+    }
+    else{
+        metrics.ascender    = face->size->metrics.ascender >> 6;
+        metrics.descender   = face->size->metrics.descender >> 6;
+        metrics.height      = face->size->metrics.height >> 6;
+        metrics.max_advance = face->size->metrics.max_advance >> 6;
+        metrics.underline_position = face->underline_position >> 6;
+        metrics.underline_thickness = face->underline_thickness >> 6;
+    }
     return metrics;
 }
 auto  Face::build_glyph(Uint code) -> GlyphMetrics{
@@ -105,26 +145,31 @@ auto  Face::build_glyph(Uint code) -> GlyphMetrics{
     ret.advance_x   = slot->advance.x >> 6;
     return ret;
 }
-void  Face::render_glyph(Uint code,void *b,int pitch,int px,int py){
-    FT_Load_Glyph(face,code,FT_LOAD_RENDER | flags);
+void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
+    if(FT_Load_Glyph(face,code,FT_LOAD_RENDER | flags)){
+        std::abort();
+    }
     FT_GlyphSlot slot = face->glyph;
     //Begin rendering
     //TODO : Handle pitch and Format
+    uint8_t *pixels = static_cast<uint8_t*>(b);
     for(int y = 0;y < slot->bitmap.rows;y++){
         for(int x = 0;x < slot->bitmap.width;x++){
-            int p = (py + y) * pitch + (px + x);
-            int c = slot->bitmap.buffer[y * slot->bitmap.width + x];
-
-            static_cast<uint8_t*>(b)[p] = c;
+            pixels[
+                (pen_y + y) * pitch +
+                (pen_x + x)
+            ] = slot->bitmap.buffer[y * slot->bitmap.width + x];
         }
     }
 }
-auto  Face::measure_text(const char *text,size_t len) -> Size{
+auto  Face::measure_text(const char *text,const char *end) -> Size{
     int w = 0;
     int h = 0;
 
     const char *cur = text;
-    const char *end = text + len;
+    if(end == nullptr){
+        end = text + std::strlen(text);
+    }
     GlyphMetrics glyph;
     FaceMetrics  m = metrics();
 
@@ -150,8 +195,8 @@ auto  Face::measure_text(const char *text,size_t len) -> Size{
     }
     return {w,h};
 }
-auto  Face::render_text(const char *text,size_t len) -> Ref<Blob>{
-    Size size = measure_text(text,len);
+auto  Face::render_text(const char *text,const char *end) -> Bitmap{
+    Size size = measure_text(text,end);
     auto blob = manager->alloc_blob(size.width * size.height);
     auto m    = metrics();
 
@@ -162,7 +207,9 @@ auto  Face::render_text(const char *text,size_t len) -> Ref<Blob>{
     int pen_y = 0;
 
     const char *cur = text;
-    const char *end = text + len;
+    if(end == nullptr){
+        end = text + std::strlen(text);
+    }
 
     Uint prev = 0;
 
@@ -186,18 +233,17 @@ auto  Face::render_text(const char *text,size_t len) -> Ref<Blob>{
         }
         prev = idx;
     }
-    return blob;
+    Bitmap ret;
+    ret.width  = size.width;
+    ret.height = size.height;
+    ret.data   = blob;
+    return ret;
 }
 Ref<Face> Face::clone(){
-    if(FT_Reference_Face(face)){
-        //Error
-        return {};
-    }
-    Ref<Face> ret = new Face();
-    ret->manager = manager;
-    ret->blob    = blob;
-    ret->face    = face;
-    return ret;
+    return manager->new_face(
+        blob,
+        idx
+    );
 }
 
 //Utility functions    
@@ -255,6 +301,7 @@ char32_t  Utf8Decode(const char *&str){
 }
 
 Ref<Blob> MapFile(const char *file){
+    #ifdef _WIN32
     //Convert to wide string
     size_t len = std::strlen(file);
     wchar_t *wfile = new wchar_t[len + 1];
@@ -299,7 +346,51 @@ Ref<Blob> MapFile(const char *file){
     blob->set_finalizer([](void *data, size_t size, void *user){
         UnmapViewOfFile(data);
     }, nullptr);
+    #elif defined(__linux)
+    //Mmap
+    int fd = open(file,O_RDONLY);
+    if(fd == -1){
+        return {};
+    }
+    struct stat st;
+    fstat(fd,&st);
+    void *data = mmap(nullptr,st.st_size,PROT_READ,MAP_SHARED,fd,0);
+    close(fd);
+    if(data == MAP_FAILED){
+        return {};
+    }
+    //Create blob
+    Ref<Blob> blob = new Blob(data,st.st_size);
+    blob->set_finalizer([](void *data, size_t size, void *user){
+        munmap(data,size);
+    },nullptr);
+    #else
+    //Read all file into memory
+    FILE *fp = std::fopen(file,"rb");
+    std::fseek(fp,SEEK_END,0);
+    auto size = std::ftell(fp);
+    std::fseek(fp,SEEK_SET,0);
+
+    void *ptr = std::malloc(size);
+    if(ptr == nullptr){
+        std::fclose(fp);
+        return {};
+    }
+    Ref<Blob> blob = new Blob(ptr,size);
+    blob->set_finalizer([](void *p,size_t,void*){
+        std::free(p);
+    },nullptr);
+    //Read it
+    if(std::fread(fp,ptr,size,1) != 1){
+        std::fclose(fp);
+        return {};
+    }
+    std::fclose(fp);
+    #endif
     return blob;
 }
 
 LILIM_NS_END
+
+
+// C API

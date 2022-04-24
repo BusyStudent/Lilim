@@ -18,23 +18,27 @@
         }
 #endif
 
+#ifndef LILIM_STBTRUETYPE
+    #include <ft2build.h>
+    #include FT_FREETYPE_H
+#else
+    #ifdef LILIM_STBTRUETYPE_H
+        #include LILIM_STBTRUETYPE_H
+    #endif
+
+    #define FT_Face stbtt_fontinfo
+#endif
+
 #include <cstdlib>
 #include <cstdint>
 #include <cstdio>
-#include <string>
-#include <vector>
-#include <stack>
-#include <map>
 
-#include <ft2build.h>
-#include FT_FREETYPE_H
 
 LILIM_NS_BEGIN
 
 using Uint = unsigned int;
 
 class Manager;
-class Context;
 class Face;
 // Bultin refcounter
 template<class T>
@@ -70,6 +74,10 @@ class Ref {
                 ptr->ref();
             }
         }
+        Ref(Ref &&r){
+            ptr = r.ptr;
+            r.ptr = nullptr;
+        }
         ~Ref(){
             release();
         }
@@ -81,6 +89,14 @@ class Ref {
                 if(ptr != nullptr){
                     ptr->ref();
                 }
+            }
+            return *this;
+        }
+        Ref &operator=(Ref &&r){
+            if(this != &r){
+                release();
+                ptr = r.ptr;
+                r.ptr = nullptr;
             }
             return *this;
         }
@@ -102,6 +118,9 @@ class Ref {
         }
         bool empty() const noexcept {
             return ptr == nullptr;
+        }
+        operator bool() const noexcept {
+            return ptr != nullptr;
         }
     private:
         T *ptr = nullptr;
@@ -142,17 +161,24 @@ class Blob: public Refable<Blob> {
         size_t _size = 0;
 };
 
-class Bitmap : public Refable<Bitmap> {
+typedef void *(*ReallocFunc)(void *ptr  ,size_t size,void *user);
+typedef void *(*MallocFunc )(size_t size,void *user);
+typedef void  (*FreeFunc   )(void *ptr  ,void *user);
 
-};
-
-class MemHandler{
+/**
+ * @brief Memory Allocator
+ * 
+ */
+class MemHandler {
     public:
-
+        ReallocFunc realloc = nullptr;
+        MallocFunc  malloc = nullptr;
+        FreeFunc    free = nullptr;
+        void       *user = nullptr;
 };
 
 /**
- * @brief 
+ * @brief Resource manager
  * 
  */
 class Manager {
@@ -165,9 +191,16 @@ class Manager {
         Ref<Face> new_face(const char *file,int index);
         Ref<Blob> alloc_blob(size_t size);
         Ref<Blob> realloc_blob(Ref<Blob> blob,size_t size);
-    private:
-        FT_Library library;
 
+        void     *malloc (size_t size);
+        void     *realloc(void *ptr,size_t size);
+        void      free   (void *ptr);
+    private:
+        #ifndef LILIM_STBTRUETYPE
+        FT_Library library;
+        #endif
+        
+        MemHandler memory;
 };
 
 
@@ -201,6 +234,14 @@ class FaceMetrics {
         float underline_thickness = 0;
 };
 
+class Bitmap : public Size {
+    public:
+        Ref<Blob> data;
+        Blob *operator ->() const{
+            return data.get();
+        }
+};
+
 class Face: public Refable<Face> {
     public:
         Face(const Face &) = delete;
@@ -211,7 +252,10 @@ class Face: public Refable<Face> {
             return face;
         }
 
+        void  set_dpi    (Uint xdpi,Uint ydpi);
         void  set_size   (FaceSize size);
+        void  set_size   (Uint     size);
+        void  set_flags  (Uint     flags); 
         Uint  kerning    (Uint left,Uint right);
         Uint  glyph_index(char32_t codepoint);
         auto  metrics()              -> FaceMetrics;
@@ -224,62 +268,89 @@ class Face: public Refable<Face> {
             int pen_y
         ) -> void;
 
-        auto measure_text(const char *text,size_t len) -> Size;
-        auto render_text(const char *text,size_t len) -> Ref<Blob>;
+        auto measure_text(const char *text,const char *end = nullptr) -> Size;
+        auto render_text(const char *text,const char *end = nullptr) -> Bitmap;
     private:
         Face();
 
         Manager  *manager;
         Ref<Blob> blob;
         FT_Face   face;
-        FT_UInt   flags; // FT_LOAD_XXX
+        Uint      flags; // FT_LOAD_XXX
+        Uint      xdpi; // DPI in set_size(Uint)
+        Uint      ydpi; // DPI in set_size(Uint)
+        Uint      idx; // Face Index 
     friend class Manager;
 };
 
 //Math Utility
-inline uint32_t  FixedRound(uint32_t x);
+inline uint32_t  FixedFloor(uint32_t x);
 inline uint32_t  FixedCeil(uint32_t x);
 //Utility
 extern char32_t  Utf8Decode(const char *&str);
 extern Ref<Blob> MapFile(const char *path);
 
+//Inline implement
+inline uint32_t FixedFloor(uint32_t x){
+    return ((x & -64) / 64);
+}
+inline uint32_t FixedCeil(uint32_t x){
+    return (((x + 63) & -64) / 64);
+}
+
+//Manager
+inline void *Manager::malloc(size_t byte){
+    return memory.malloc(byte,memory.user);
+}
+inline void *Manager::realloc(void *ptr,size_t byte){
+    return memory.realloc(ptr,byte,memory.user);
+}
+inline void  Manager::free(void *ptr){
+    return memory.free(ptr,memory.user);
+}
+
+//Face
+inline void Face::set_flags(Uint flags){
+    this->flags = flags;
+}
+inline void Face::set_dpi(Uint xdpi,Uint ydpi){
+    this->xdpi = xdpi;
+    this->ydpi = ydpi;
+}
+
 LILIM_NS_END
 
 //C-style wrapper
 
-#ifdef LILIM_STATIC
-    #define LILIM_CAPI extern "C" static
+#ifdef LILIM_CSTATIC
+    #define LILIM_CAPI(X) static     X
 #else
-    #define LILIM_CAPI extern "C"
+    #define LILIM_CAPI(X) extern "C" X 
 #endif
 
-#ifndef _LILIM_SOURCE
+#ifndef _LILIM_SOURCE_
     #define LILIM_HANDLE(X) typedef struct _Lilim_##X *Lilim_##X
 #else
-    #define LILIM_HANDLE(X) typedef Lilim::X Lilim_##X
+    #define LILIM_HANDLE(X) typedef LILIM_NAMESPACE::X Lilim_##X
 #endif
 
 LILIM_HANDLE (Manager);
-LILIM_HANDLE (Context);
 LILIM_HANDLE (Blob);
 LILIM_HANDLE (Face);
-LILIM_HANDLE (Font);
 
 //Manager
-LILIM_CAPI Lilim_Manager Lilim_NewManager();
-LILIM_CAPI void          Lilim_DestroyManager(Lilim_Manager manager);
+LILIM_CAPI(Lilim_Manager) Lilim_NewManager();
+LILIM_CAPI(void         ) Lilim_DestroyManager(Lilim_Manager manager);
 
-//Face
-LILIM_CAPI Lilim_Face    Lilim_NewFace(Lilim_Manager manager,Lilim_Blob blob,int index);
-LILIM_CAPI Lilim_Face    Lilim_CloneFace(Lilim_Face face);
-LILIM_CAPI void          Lilim_CloseFace(Lilim_Face face);
+//Fac(
+LILIM_CAPI(Lilim_Face   ) Lilim_NewFace(Lilim_Manager manager,Lilim_Blob blob,int index);
+LILIM_CAPI(Lilim_Face   ) Lilim_CloneFace(Lilim_Face face);
+LILIM_CAPI(void         ) Lilim_CloseFace(Lilim_Face face);
 
 //Blob
-LILIM_CAPI Lilim_Blob    Lilim_MapData(const void *data,size_t size);
-LILIM_CAPI Lilim_Blob    Lilim_MapFile(const char *path);
-LILIM_CAPI void          Lilim_FreeBlob(Lilim_Blob blob);
+LILIM_CAPI(Lilim_Blob   ) Lilim_MapData(const void *data,size_t size);
+LILIM_CAPI(Lilim_Blob   ) Lilim_MapFile(const char *path);
+LILIM_CAPI(void         ) Lilim_FreeBlob(Lilim_Blob blob);
 
-//Nanovg Interface
-LILIM_CAPI Lilim_Context Lilim_NewContext(Lilim_Manager manager);
-LILIM_CAPI void          Lilim_DestroyContext(Lilim_Context context);
-LILIM_CAPI int           Lilim_AddFont(Lilim_Context context,Lilim_Font font);
+//Cleanup
+#undef FT_Face

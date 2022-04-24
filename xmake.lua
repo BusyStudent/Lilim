@@ -8,7 +8,6 @@ target("Lilim")
     add_files("lilim.cpp")
 target("test")
     set_kind("binary")
-    add_deps("Lilim")
     add_files("test.cpp")
 
 --
