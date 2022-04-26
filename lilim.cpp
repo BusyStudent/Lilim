@@ -143,6 +143,13 @@ auto  Face::build_glyph(Uint code) -> GlyphMetrics{
     ret.bitmap_left = slot->bitmap_left;
     ret.bitmap_top  = slot->bitmap_top;
     ret.advance_x   = slot->advance.x >> 6;
+
+    //LCD mode
+    if(flags & FT_LOAD_TARGET_LCD == FT_LOAD_TARGET_LCD){
+        LILIM_ASSERT(ret.width % 3 == 0);
+        ret.width /= 3;
+    }
+
     return ret;
 }
 void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
@@ -152,14 +159,46 @@ void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
     FT_GlyphSlot slot = face->glyph;
     //Begin rendering
     //TODO : Handle pitch and Format
-    uint8_t *pixels = static_cast<uint8_t*>(b);
-    for(int y = 0;y < slot->bitmap.rows;y++){
-        for(int x = 0;x < slot->bitmap.width;x++){
-            pixels[
-                (pen_y + y) * pitch +
-                (pen_x + x)
-            ] = slot->bitmap.buffer[y * slot->bitmap.width + x];
+
+    switch(slot->bitmap.pixel_mode){
+        case FT_PIXEL_MODE_MONO:
+        case FT_PIXEL_MODE_GRAY:{
+            uint8_t *pixels = static_cast<uint8_t*>(b);
+            for(int y = 0;y < slot->bitmap.rows;y++){
+                for(int x = 0;x < slot->bitmap.width;x++){
+                    pixels[
+                        (pen_y + y) * pitch +
+                        (pen_x + x)
+                    ] = slot->bitmap.buffer[y * slot->bitmap.width + x];
+                }
+            }
+            break;
         }
+        case FT_PIXEL_MODE_LCD:{
+            //Write to RGBA buffer
+            uint8_t *pixels = static_cast<uint8_t*>(b);
+            int width = slot->bitmap.width;
+            int row   = slot->bitmap.rows / 3;
+
+            for(int y = 0;y < row;y++){
+                for(int x = 0;x < width;x++){
+                    uint32_t *dst = reinterpret_cast<uint32_t*>(
+                        pixels + (pen_y + y) * pitch +
+                        (pen_x + x) * 4
+                    );
+                    uint8_t  *src = &slot->bitmap.buffer[y * width * 3 + x];
+                    //Begin Pack
+                    uint32_t pix = 0;
+                    pix |= uint32_t(src[0]) << 24;
+                    pix |= uint32_t(src[1]) << 16;
+                    pix |= uint32_t(src[2]) << 8;
+                }
+            }
+            break;
+        }
+        default:
+            //Unsupported pixel mode now
+            LILIM_ASSERT(false);
     }
 }
 auto  Face::measure_text(const char *text,const char *end) -> Size{

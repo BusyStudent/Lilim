@@ -21,12 +21,19 @@
 #ifndef LILIM_STBTRUETYPE
     #include <ft2build.h>
     #include FT_FREETYPE_H
+    #include FT_OUTLINE_H
+    #include FT_GLYPH_H
 #else
     #ifdef LILIM_STBTRUETYPE_H
         #include LILIM_STBTRUETYPE_H
     #endif
 
     #define FT_Face stbtt_fontinfo
+#endif
+
+#ifndef LILIM_ASSERT
+    #define LILIM_ASSERT(x) assert(x)
+    #include <cassert>
 #endif
 
 #include <cstdlib>
@@ -242,6 +249,20 @@ class Bitmap : public Size {
         }
 };
 
+enum Style : Uint {
+    Normal    = 0,
+    Bold      = 1 << 0,
+    Italic    = 1 << 1,
+    Underline = 1 << 2,
+    Strikeout = 1 << 3,
+};
+// Clear type hinting
+enum LCD : Uint {
+    LCDNone       = 0,
+    LCDVertical   = 1 << 0,
+    LCDHorizontal = 1 << 1,
+};
+
 class Face: public Refable<Face> {
     public:
         Face(const Face &) = delete;
@@ -251,11 +272,16 @@ class Face: public Refable<Face> {
         FT_Face   native_handle() const{
             return face;
         }
+        Uint      load_flags() const{
+            return flags;
+        }
 
         void  set_dpi    (Uint xdpi,Uint ydpi);
         void  set_size   (FaceSize size);
         void  set_size   (Uint     size);
-        void  set_flags  (Uint     flags); 
+        void  set_style  (Uint     style);
+        void  set_flags  (Uint     flags);
+        void  set_lcd    (Uint     flags);
         Uint  kerning    (Uint left,Uint right);
         Uint  glyph_index(char32_t codepoint);
         auto  metrics()              -> FaceMetrics;
@@ -342,7 +368,7 @@ LILIM_HANDLE (Face);
 LILIM_CAPI(Lilim_Manager) Lilim_NewManager();
 LILIM_CAPI(void         ) Lilim_DestroyManager(Lilim_Manager manager);
 
-//Fac(
+//Face
 LILIM_CAPI(Lilim_Face   ) Lilim_NewFace(Lilim_Manager manager,Lilim_Blob blob,int index);
 LILIM_CAPI(Lilim_Face   ) Lilim_CloneFace(Lilim_Face face);
 LILIM_CAPI(void         ) Lilim_CloseFace(Lilim_Face face);

@@ -28,7 +28,22 @@
     #define FONS_MAX_CACHED_GLYPHS (1024 * 4)
 #endif
 
+#ifdef FONS_CLEARTYPE
+    #ifdef LILIM_STBTRUETYPE_H
+        #error "backend must be freetype"
+    #endif
+
+    #undef  FONS_CLEARTYPE
+    #define FONS_CLEARTYPE 1
+    #define FONS_PIXEL uint32_t
+#else
+    #undef  FONS_CLEARTYPE
+    #define FONS_CLEARTYPE 0
+    #define FONS_PIXEL uint8_t
+#endif
+
 #include <unordered_map>
+#include <functional>
 #include <string>
 #include <vector>
 #include <stack>
@@ -58,6 +73,7 @@ enum {
 FONS_NS_BEGIN
 
 using namespace LILIM_NAMESPACE;
+using Pixel = FONS_PIXEL;
 //Interface for nanovg
 class Context;
 class Fontstash;
@@ -113,14 +129,20 @@ class Font: public Refable<Font> {
     private:
         Font();
 
+        void clear_cache_of(Context *c);
+
         std::unordered_multimap<char32_t,Glyph> glyphs;
-        std::vector<Ref<Font>>     fallbacks;
+        std::vector<int>           fallbacks;
         std::string                name;
         Fontstash                 *stash;
         Ref<Face>                  face;
         int                        id;
     friend class Fontstash;
+    friend class Context;
 };
+
+using FallbackQuery = std::function<Font*(char32_t )>;
+
 /**
  * @brief For managing fonts 
  * 
@@ -129,13 +151,25 @@ class Fontstash {
     public:
         Fontstash(Manager &manager);
         ~Fontstash();
-
+        /**
+         * @brief Add a face into font
+         * 
+         * @note If you enable FONS_CLEARTYPE,it will add FT_LOAD_TARGET_LCD into this face
+         * @param font 
+         * @return int 
+         */
         int   add_font(Ref<Face> font);
         Font *get_font(const char *name);
         Font *get_font(int id);
+
+        Manager *manager() const noexcept{
+            return _manager;
+        }
     private:
+        FallbackQuery    get_fallback;//< Callback for fallback
         std::map<int,Ref<Font>> fonts; 
-        Manager              *manager;
+        Manager             *_manager;
+    friend class Font;
 };
 /**
  * @brief For managing bitmaps and atlas
@@ -244,7 +278,7 @@ class Context {
             bool add_rect(int x,int y,int *w,int *h);
         };
         std::set<Ref<Font>>     fonts;
-        std::vector<uint8_t>    bitmap;
+        std::vector<Pixel>      bitmap;
         std::stack<State>       states;
         Atlas                   atlas;
         Fontstash              *stash;
@@ -313,10 +347,14 @@ struct FONSparams {
 	void (*renderDraw)(void* uptr, const float* verts, const float* tcoords, const unsigned int* colors, int nverts);
 	void (*renderDelete)(void* uptr);
 };
+
+using FONSruntime  = FONS_NAMESPACE::Fontstash;
 using FONStextIter = FONS_NAMESPACE::TextIter;
 using FONScontext = FONS_NAMESPACE::Context;
 using FONSquad    = FONS_NAMESPACE::Quad;
 
+//Macro Wrapper
+#ifdef FONS_MACRO_WRAPPER
 
 #ifndef fonsGetStash
     extern FONS_NAMESPACE::Fontstash *__fons_stash;
@@ -355,8 +393,61 @@ using FONSquad    = FONS_NAMESPACE::Quad;
 #define fonsTextIterNext(S,ITER,QUAD) (ITER)->to_next(QUAD)
 
 //Pull Data
-#define fonsGetTextureData(S,W,H) (const uint8_t*)S->get_data(W,H)
+#define fonsGetTextureData(S,W,H) (const FONS_PIXEL*)S->get_data(W,H)
 #define fonsValidateTexture(S,D) S->validate(D)
 
 //Atlas
 #define fonsExpandAtlas(S,W,H) S->expand_atlas(W,H)
+
+#else
+
+//Function Wrapper
+#ifdef FONS_CSTATIC
+    #define FONS_CAPI(X) static     X
+#else
+    #define FONS_CAPI(X) extern "C" X 
+#endif
+
+FONS_CAPI(FONSruntime *) fonsCreateRuntime(Lilim_Manager *manager);
+FONS_CAPI(void         ) fonsDeleteRuntime(FONSruntime *stash);
+FONS_CAPI(void         ) fonsMakeCurrent(FONSruntime *stash);
+
+FONS_CAPI(FONScontext *) fonsCreateInternal(FONSparams *params);
+FONS_CAPI(void         ) fonsDeleteInternal(FONScontext *s);
+
+FONS_CAPI(void         ) fonsSetSpacing(FONScontext *s,float spacing);
+FONS_CAPI(void         ) fonsSetSize(FONScontext *s,float size);
+FONS_CAPI(void         ) fonsSetFont(FONScontext *s,int font);
+FONS_CAPI(void         ) fonsSetBlur(FONScontext *s,int blur);
+FONS_CAPI(void         ) fonsSetAlign(FONScontext *s,int align);
+
+// States Manage
+FONS_CAPI(void         ) fonsPushState(FONScontext *s);
+FONS_CAPI(void         ) fonsPopState(FONScontext *s);
+FONS_CAPI(void         ) fonsClearState(FONScontext *s);
+
+// Font Set / Add
+FONS_CAPI(int          ) fonsAddFont(FONScontext *s,const char* name,const char* path,int fontindex);
+FONS_CAPI(int          ) fonsAddFontMem(FONScontext *s,const char* name,unsigned char* data,int ndata,int freeData,int fontindex);
+FONS_CAPI(int          ) fonsGetFontByName(FONScontext *s,const char* name);
+FONS_CAPI(int          ) fonsAddFallbackFont(FONScontext *s,const char* name,int fontindex);
+FONS_CAPI(void         ) fonsResetFallbackFont(FONScontext *s,int font);
+
+// Pull Data
+FONS_CAPI(FONS_PIXEL  *) fonsGetTextureData(FONScontext *s,int* width,int* height);
+FONS_CAPI(int          ) fonsValidateTexture(FONScontext *s,int *dirty);
+
+// Measure Text
+FONS_CAPI(float        ) fonsTextBounds(FONScontext *s,float x,float y,const char* str,const char* end,float* bounds);
+FONS_CAPI(void         ) fonsLineBounds(FONScontext *s,float y,float* miny,float* maxy);
+FONS_CAPI(void         ) fonsVertMetrics(FONScontext *s,float* ascender,float* descender,float* lineh);
+
+// Text Iterator
+FONS_CAPI(int          ) fonsTextIterInit(FONScontext *s,FONStextIter* iter,float x,float y,const char* str,const char* end,int bitmapOption);
+FONS_CAPI(int          ) fonsTextIterNext(FONScontext *s,FONStextIter* iter,FONSquad* quad);
+
+// Atlas
+FONS_CAPI(void         ) fonsExpandAtlas(FONScontext *s,int width,int height);
+FONS_CAPI(void         ) fonsResetAtlas(FONScontext *s,int width,int height);
+
+#endif

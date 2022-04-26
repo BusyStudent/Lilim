@@ -1,6 +1,7 @@
 // nanovg interface
 //
 // Copyright (c) 2009-2013 Mikko Mononen memon@inside.org
+// Copyright (c) 2022 BusyStudent 
 //
 // This software is provided 'as-is', without any express or implied
 // warranty.  In no event will the authors be held liable for any damages
@@ -19,9 +20,16 @@
 #include <algorithm>
 #include <cstring>
 
+#define _FONS_SOURCE_
 #include "fontstash.hpp"
 
 FONS_NS_BEGIN
+
+#if FONS_CLEARTYPE
+constexpr int bytes_per_pixels = 4;
+#else
+constexpr int bytes_per_pixels = 1;
+#endif
 
 Font::Font(){
 
@@ -45,16 +53,34 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
 
     Glyph *g = nullptr;
     Uint idx = face->glyph_index(param.codepoint);
+    auto stash = param.context->stash;
+    auto ctxt  = param.context;
 
     if(idx == 0){
         //No glyph, try fallbacks
-        for(auto &f:fallbacks){
+        for(auto iter = fallbacks.begin();iter != fallbacks.end();){
+            Font *f = stash->get_font(*iter);
+            if(f == nullptr){
+                //Unexisting font
+                iter = fallbacks.erase(iter);
+                continue;
+            }
             idx = f->face->glyph_index(param.codepoint);
             if(idx != 0){
                 return f->get_glyph(param,req_bitmap);
             }
+            ++iter;
         }
-        //Oh,no.just keep it
+        //Oh,no.try callback
+        if(stash->get_fallback != nullptr){
+            Font *f = stash->get_fallback(param.codepoint);
+            if(f != nullptr && f != this){
+                //Add it to fallbacks
+                fallbacks.push_back(f->get_id());
+                return f->get_glyph(param,req_bitmap);
+            }
+        }
+        //Still no glyph, return empty glyph
     }
 
     //find existing glyph
@@ -62,8 +88,13 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
     auto num  = glyphs.count(param.codepoint);
 
     while(num){
-        if(iter->second.spacing == param.spacing && iter->second.size == param.size){
-            g = &iter->second;
+        auto &glyph = iter->second;
+        
+        if(glyph.spacing == param.spacing && 
+           glyph.size == param.size && 
+           glyph.blur == param.blur){
+            
+            g = &glyph;
             break;
         }
         num--;
@@ -107,10 +138,13 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
         face->render_glyph(
             idx,
             param.context->bitmap.data(),
-            param.context->bitmap_w,
+            param.context->bitmap_w * bytes_per_pixels,
             x,
             y
         );
+        if(param.blur > 0){
+            //TODO blur
+        }
         //Update dirty
         int *dirty = param.context->dirty_rect;
         dirty[0] = std::min(dirty[0],x);
@@ -120,9 +154,22 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
     }
     return g;
 }
+//Clear cache of specified context
+void Font::clear_cache_of(Context *ctxt){
+    auto iter = glyphs.begin();
+    while(iter != glyphs.end()){
+        auto &glyph = iter->second;
+        if(glyph.context == ctxt){
+            iter = glyphs.erase(iter);
+        }
+        else{
+            ++iter;
+        }
+    }
+}
 
 Fontstash::Fontstash(Manager &m){
-    manager = &m;
+    _manager = &m;
 }
 Fontstash::~Fontstash(){
 
@@ -142,6 +189,13 @@ int   Fontstash::add_font(Ref<Face> face){
     f->face = face;
     f->id = id;
     fonts[id] = f;
+
+    #if FONS_CLEARTYPE
+    face->set_flags(
+        face->load_flags() | FT_LOAD_TARGET_LCD 
+    );
+    #endif
+
     return id;
 }
 Font *Fontstash::get_font(int id){
@@ -150,6 +204,14 @@ Font *Fontstash::get_font(int id){
         return nullptr;
     }
     return it->second.get();
+}
+Font *Fontstash::get_font(const char *name){
+    for(auto &it : fonts){
+        if(it.second->name == name){
+            return it.second.get();
+        }
+    }
+    return nullptr;
 }
 
 //Context operations
@@ -288,18 +350,18 @@ float Context::text_bounds(float x, float y, const char* str, const char* end, f
 }
 bool Context::validate(int *dirty){
     if (dirty_rect[0] < dirty_rect[2] && dirty_rect[1] < dirty_rect[3]) {
-		dirty[0] = dirty_rect[0];
-		dirty[1] = dirty_rect[1];
-		dirty[2] = dirty_rect[2];
-		dirty[3] = dirty_rect[3];
-		// Reset dirty rect
-		dirty_rect[0] = bitmap_w;
-		dirty_rect[1] = bitmap_h;
-		dirty_rect[2] = 0;
-		dirty_rect[3] = 0;
-		return 1;
-	}
-	return 0;
+        dirty[0] = dirty_rect[0];
+        dirty[1] = dirty_rect[1];
+        dirty[2] = dirty_rect[2];
+        dirty[3] = dirty_rect[3];
+        // Reset dirty rect
+        dirty_rect[0] = bitmap_w;
+        dirty_rect[1] = bitmap_h;
+        dirty_rect[2] = 0;
+        dirty_rect[3] = 0;
+        return 1;
+    }
+    return 0;
 }
 //Manage owned font
 void Context::add_font(int id){
@@ -370,154 +432,154 @@ void Context::dump_info(FILE *fp){
 
 //Atlas from nanovg
 Context::Atlas::Atlas(int w,int h){
-	// Allocate memory for the font stash.
+    // Allocate memory for the font stash.
     int n = 255;
-	std::memset(this, 0, sizeof(Atlas));
+    std::memset(this, 0, sizeof(Atlas));
 
-	width = w;
-	height = h;
+    width = w;
+    height = h;
 
-	// Allocate space for skyline nodes
-	nodes = (AtlasNode*)std::malloc(sizeof(AtlasNode) * n);
-	memset(nodes, 0, sizeof(AtlasNode) * n);
-	nnodes = 0;
-	cnodes = n;
+    // Allocate space for skyline nodes
+    nodes = (AtlasNode*)std::malloc(sizeof(AtlasNode) * n);
+    memset(nodes, 0, sizeof(AtlasNode) * n);
+    nnodes = 0;
+    cnodes = n;
 
-	// Init root node.
-	nodes[0].x = 0;
-	nodes[0].y = 0;
-	nodes[0].width = (short)w;
-	nnodes++;
+    // Init root node.
+    nodes[0].x = 0;
+    nodes[0].y = 0;
+    nodes[0].width = (short)w;
+    nnodes++;
 }
 Context::Atlas::~Atlas(){
     std::free(nodes);
 }
 bool Context::Atlas::insert_node(int idx,int x,int y,int w){
     int i;
-	// Insert node
-	if (nnodes+1 > cnodes) {
-		cnodes = cnodes == 0 ? 8 : cnodes * 2;
-		nodes = (AtlasNode*)std::realloc(nodes, sizeof(AtlasNode) * cnodes);
-		if (nodes == nullptr)
-			return false;
-	}
-	for (i = nnodes; i > idx; i--)
-		nodes[i] = nodes[i-1];
-	nodes[idx].x = (short)x;
-	nodes[idx].y = (short)y;
-	nodes[idx].width = (short)w;
-	nnodes++;
+    // Insert node
+    if (nnodes+1 > cnodes) {
+        cnodes = cnodes == 0 ? 8 : cnodes * 2;
+        nodes = (AtlasNode*)std::realloc(nodes, sizeof(AtlasNode) * cnodes);
+        if (nodes == nullptr)
+            return false;
+    }
+    for (i = nnodes; i > idx; i--)
+        nodes[i] = nodes[i-1];
+    nodes[idx].x = (short)x;
+    nodes[idx].y = (short)y;
+    nodes[idx].width = (short)w;
+    nnodes++;
     return true;
 }
 void Context::Atlas::remove_node(int idx){
     int i;
-	if (nnodes == 0) return;
-	for (i = idx; i < nnodes-1; i++)
-		nodes[i] = nodes[i+1];
-	nnodes--;
+    if (nnodes == 0) return;
+    for (i = idx; i < nnodes-1; i++)
+        nodes[i] = nodes[i+1];
+    nnodes--;
 }
 void Context::Atlas::expend(int w,int h){
-	// Insert node for empty space
-	if (w > width)
-		insert_node(nnodes, width, 0, w - width);
-	width = w;
-	height = h;
+    // Insert node for empty space
+    if (w > width)
+        insert_node(nnodes, width, 0, w - width);
+    width = w;
+    height = h;
 }
 void Context::Atlas::reset(int w,int h){
-	width = w;
-	height = h;
-	nnodes = 0;
+    width = w;
+    height = h;
+    nnodes = 0;
 
-	// Init root node.
-	nodes[0].x = 0;
-	nodes[0].y = 0;
-	nodes[0].width = (short)w;
-	nnodes++;
+    // Init root node.
+    nodes[0].x = 0;
+    nodes[0].y = 0;
+    nodes[0].width = (short)w;
+    nnodes++;
 }
 bool Context::Atlas::add_skyline(int idx, int x, int y, int w, int h){
-	int i;
+    int i;
 
-	// Insert new node
-	if (insert_node(idx, x, y+h, w) == 0)
-		return false;
+    // Insert new node
+    if (insert_node(idx, x, y+h, w) == 0)
+        return false;
 
-	// Delete skyline segments that fall under the shadow of the new segment.
-	for (i = idx+1; i < nnodes; i++) {
-		if (nodes[i].x < nodes[i-1].x + nodes[i-1].width) {
-			int shrink = nodes[i-1].x + nodes[i-1].width - nodes[i].x;
-			nodes[i].x += (short)shrink;
-			nodes[i].width -= (short)shrink;
-			if (nodes[i].width <= 0) {
-				remove_node(i);
-				i--;
-			} else {
-				break;
-			}
-		} else {
-			break;
-		}
-	}
+    // Delete skyline segments that fall under the shadow of the new segment.
+    for (i = idx+1; i < nnodes; i++) {
+        if (nodes[i].x < nodes[i-1].x + nodes[i-1].width) {
+            int shrink = nodes[i-1].x + nodes[i-1].width - nodes[i].x;
+            nodes[i].x += (short)shrink;
+            nodes[i].width -= (short)shrink;
+            if (nodes[i].width <= 0) {
+                remove_node(i);
+                i--;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
 
-	// Merge same height skyline segments that are next to each other.
-	for (i = 0; i < nnodes-1; i++) {
-		if (nodes[i].y == nodes[i+1].y) {
-			nodes[i].width += nodes[i+1].width;
-			remove_node(i+1);
-			i--;
-		}
-	}
+    // Merge same height skyline segments that are next to each other.
+    for (i = 0; i < nnodes-1; i++) {
+        if (nodes[i].y == nodes[i+1].y) {
+            nodes[i].width += nodes[i+1].width;
+            remove_node(i+1);
+            i--;
+        }
+    }
 
-	return true;
+    return true;
 }
 int  Context::Atlas::rect_fits(int i, int w, int h){
-	// Checks if there is enough space at the location of skyline span 'i',
-	// and return the max height of all skyline spans under that at that location,
-	// (think tetris block being dropped at that position). Or -1 if no space found.
-	int x = nodes[i].x;
-	int y = nodes[i].y;
-	int spaceLeft;
-	if (x + w > width)
-		return -1;
-	spaceLeft = w;
-	while (spaceLeft > 0) {
-		if (i == nnodes) return -1;
-		y = std::max<int>(y, nodes[i].y);
-		if (y + h > height) return -1;
-		spaceLeft -= nodes[i].width;
-		++i;
-	}
-	return y;
+    // Checks if there is enough space at the location of skyline span 'i',
+    // and return the max height of all skyline spans under that at that location,
+    // (think tetris block being dropped at that position). Or -1 if no space found.
+    int x = nodes[i].x;
+    int y = nodes[i].y;
+    int spaceLeft;
+    if (x + w > width)
+        return -1;
+    spaceLeft = w;
+    while (spaceLeft > 0) {
+        if (i == nnodes) return -1;
+        y = std::max<int>(y, nodes[i].y);
+        if (y + h > height) return -1;
+        spaceLeft -= nodes[i].width;
+        ++i;
+    }
+    return y;
 }
 bool Context::Atlas::add_rect(int rw, int rh, int* rx, int* ry){
 
     int besth = height, bestw = width, besti = -1;
-	int bestx = -1, besty = -1, i;
+    int bestx = -1, besty = -1, i;
 
-	// Bottom left fit heuristic.
-	for (i = 0; i < nnodes; i++) {
-		int y = rect_fits(i, rw, rh);
-		if (y != -1) {
-			if (y + rh < besth || (y + rh == besth && nodes[i].width < bestw)) {
-				besti = i;
-				bestw = nodes[i].width;
-				besth = y + rh;
-				bestx = nodes[i].x;
-				besty = y;
-			}
-		}
-	}
+    // Bottom left fit heuristic.
+    for (i = 0; i < nnodes; i++) {
+        int y = rect_fits(i, rw, rh);
+        if (y != -1) {
+            if (y + rh < besth || (y + rh == besth && nodes[i].width < bestw)) {
+                besti = i;
+                bestw = nodes[i].width;
+                besth = y + rh;
+                bestx = nodes[i].x;
+                besty = y;
+            }
+        }
+    }
 
-	if (besti == -1)
-		return false;
+    if (besti == -1)
+        return false;
 
-	// Perform the actual packing.
-	if (add_skyline(besti, bestx, besty, rw, rh) == 0)
-		return false;
+    // Perform the actual packing.
+    if (add_skyline(besti, bestx, besty, rw, rh) == 0)
+        return false;
 
-	*rx = bestx;
-	*ry = besty;
+    *rx = bestx;
+    *ry = besty;
 
-	return 1;
+    return 1;
 }
 
 void Context::get_atlas_size(int *w,int *h){
@@ -532,7 +594,7 @@ void Context::expand_atlas(int w,int h){
         return;
     }
     
-    std::vector<uint8_t> new_map(w * h);
+    std::vector<Pixel> new_map(w * h);
     //Copy old map to new map
     for(int y = 0;y < bitmap_h;y++){
         for(int x = 0;x < bitmap_w;x++){
@@ -568,7 +630,10 @@ void Context::reset_atlas(int w,int h){
     dirty_rect[3] = 0;
 
     //TODO Reset Glyph in owned font
-
+    for(auto &f:fonts){
+        Font *font = f.get();
+        font->clear_cache_of(this);
+    }
 }
 
 void TransformByAlign(
@@ -590,7 +655,7 @@ void TransformByAlign(
         iy -= size.height / 2;
     }
     else if(align & FONS_ALIGN_BASELINE){
-        iy -= m.ascender;
+        iy -= size.height / m.height * m.ascender;
     }
     else if(align & FONS_ALIGN_BOTTOM){
         iy -= size.height;
@@ -635,22 +700,22 @@ bool TextIter::init(Context *ctxt,float x,float y,const char* str,const char* en
     TransformByAlign(&x,&y,state.align,size,metrics);
 
 
-	this->x = this->nextx = x;
-	this->y = this->nexty = y;
-	this->spacing = state.spacing;
-	this->str = str;
-	this->next = str;
-	this->end = end;
-	this->codepoint = 0;
-	this->prevGlyphIndex = -1;
-	this->bitmapOption = bitmapOption;
+    this->x = this->nextx = x;
+    this->y = this->nexty = y;
+    this->spacing = state.spacing;
+    this->str = str;
+    this->next = str;
+    this->end = end;
+    this->codepoint = 0;
+    this->prevGlyphIndex = -1;
+    this->bitmapOption = bitmapOption;
     this->context = ctxt;
 
     this->iblur = state.blur;
     this->isize = state.size;
     this->spacing = state.spacing;
 
-    #ifndef NDEBUG
+    #ifndef FONS_NDEBUG
     printf("ascender %f\n",metrics.ascender);
     #endif
 
@@ -713,3 +778,154 @@ bool TextIter::to_next(Quad *quad){
 }
 
 FONS_NS_END
+
+//For nanovg C Interface
+
+#ifndef FONS_MACRO_WRAPPER
+
+static thread_local FONSruntime *_fons_runtime = nullptr;
+
+FONS_CAPI(FONSruntime *) fonsCreateRuntime(Lilim_Manager *manager){
+    using namespace FONS_NAMESPACE;
+    if(manager == nullptr){
+        return nullptr;
+    }
+    return new FONSruntime(reinterpret_cast<Manager&>(*manager));
+}
+FONS_CAPI(void         ) fonsDeleteRuntime(FONSruntime *stash){
+    delete stash;
+}
+FONS_CAPI(void         ) fonsMakeCurrent(FONSruntime *stash){
+    _fons_runtime = stash;
+}
+
+FONS_CAPI(FONScontext *) fonsCreateInternal(FONSparams* params){
+    if(_fons_runtime == nullptr){
+        #ifndef FONS_NDEBUG
+        fprintf(stderr,"fonsCreateInternal: No current FONSruntime\n");
+        fprintf(stderr,"fonsCreateInternal: Please call fonsMakeCurrent() first\n");
+        #endif
+        return nullptr;
+    }
+    return new FONScontext(*_fons_runtime,params->width,params->height);
+}
+FONS_CAPI(void         ) fonsDeleteInternal(FONScontext* s){
+    return delete s;
+}
+
+FONS_CAPI(void         ) fonsSetSpacing(FONScontext *s,float spacing){
+    return s->set_spacing(spacing);
+}
+FONS_CAPI(void         ) fonsSetSize(FONScontext *s,float size){
+    return s->set_size(size);
+}
+FONS_CAPI(void         ) fonsSetFont(FONScontext *s,int font){
+    return s->set_font(font);
+}
+FONS_CAPI(void         ) fonsSetBlur(FONScontext *s,int blur){
+    return s->set_blur(blur);
+}
+FONS_CAPI(void         ) fonsSetAlign(FONScontext *s,int align){
+    return s->set_align(align);
+}
+
+// States Manage
+FONS_CAPI(void         ) fonsPushState(FONScontext *s){
+    return s->push_state();
+}
+FONS_CAPI(void         ) fonsPopState(FONScontext *s){
+    return s->pop_state();
+}
+FONS_CAPI(void         ) fonsClearState(FONScontext *s){
+    return s->clear_state();
+}
+
+// Font Set / Add
+FONS_CAPI(int          ) fonsAddFont(FONScontext *s,const char* name,const char* path,int fontindex){
+    auto stash   = s->fontstash();
+    auto manager = stash->manager();
+
+    auto face = manager->new_face(path,fontindex);
+    if(face.empty()){
+        return FONS_INVALID;
+    }
+    int id = stash->add_font(face);
+    if(id != FONS_INVALID && name != nullptr){
+        stash->get_font(id)->set_name(name);
+    }
+    return id;
+}
+FONS_CAPI(int          ) fonsAddFontMem(FONScontext *s,const char* name,unsigned char* data,int ndata,int freeData,int fontindex){
+    using namespace FONS_NAMESPACE;
+    
+    auto stash   = s->fontstash();
+    auto manager = stash->manager();
+
+    Ref<Blob> blob = new Blob(data,ndata);
+    if(freeData){
+        blob->set_finalizer([](void *ptr,size_t,void*){
+            std::free(ptr);
+        },nullptr);
+    }
+
+    auto face = manager->new_face(blob,fontindex);
+    if(face.empty()){
+        return FONS_INVALID;
+    }
+    int id = stash->add_font(face);
+    if(id != FONS_INVALID && name != nullptr){
+        stash->get_font(id)->set_name(name);
+    }
+    return id;
+}
+FONS_CAPI(int          ) fonsGetFontByName(FONScontext *s,const char* name){
+    auto stash = s->fontstash();
+    auto font  = stash->get_font(name);
+    if(font == nullptr){
+        return FONS_INVALID;
+    }
+    return font->get_id();
+}
+FONS_CAPI(int          ) fonsAddFallbackFont(FONScontext *s,const char* name,int fontindex){
+    return false;
+}
+FONS_CAPI(void         ) fonsResetFallbackFont(FONScontext *s,int font){
+    return;
+}
+
+// Measure Text
+FONS_CAPI(float        ) fonsTextBounds(FONScontext *s,float x,float y,const char* str,const char* end,float* bounds){
+    return s->text_bounds(x,y,str,end,bounds);
+}
+FONS_CAPI(void         ) fonsLineBounds(FONScontext *s,float y,float* miny,float* maxy){
+    return s->line_bounds(y,miny,maxy);
+}
+FONS_CAPI(void         ) fonsVertMetrics(FONScontext *s,float* ascender,float* descender,float* lineh){
+    return s->vert_metrics(ascender,descender,lineh);
+}
+
+// Text Iterator
+FONS_CAPI(int          ) fonsTextIterInit(FONScontext *s,FONStextIter* iter,float x,float y,const char* str,const char* end,int bitmapOption){
+    return iter->init(s,x,y,str,end,bitmapOption);
+}
+FONS_CAPI(int          ) fonsTextIterNext(FONScontext *s,FONStextIter* iter,FONSquad* quad){
+    return iter->to_next(quad);
+}
+
+// Pull Data
+FONS_CAPI(FONS_PIXEL  *) fonsGetTextureData(FONScontext *s,int* width,int* height){
+    return (FONS_PIXEL*)s->get_data(width,height);    
+}
+FONS_CAPI(int          ) fonsValidateTexture(FONScontext *s,int *dirty){
+    return s->validate(dirty);
+}
+
+// Atlas
+FONS_CAPI(void         ) fonsExpandAtlas(FONScontext *s,int width,int height){
+    return s->expand_atlas(width,height);
+}
+FONS_CAPI(void         ) fonsResetAtlas(FONScontext *s,int width,int height){
+    return s->reset_atlas(width,height);
+}
+
+#endif

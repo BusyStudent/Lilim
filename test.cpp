@@ -6,6 +6,13 @@
 #include "fontstash.cpp"
 
 #include <iostream>
+
+#ifdef _WIN32
+    #define FONT_FILE "C:/Windows/Fonts/msyh.ttc"
+#else
+    #define FONT_FILE "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+#endif
+
 int main(){
     Lilim::Manager manager;
     Lilim::FaceSize size;
@@ -14,7 +21,7 @@ int main(){
     Fons::Context context(stash);
 
     // auto face = manager.new_face("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",0);
-    auto face = manager.new_face("./msyh.ttc",0);
+    auto face = manager.new_face(FONT_FILE,0);
     auto f2 = face;
     auto f3 = face;
     
