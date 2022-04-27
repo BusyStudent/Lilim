@@ -18,6 +18,7 @@
 // 3. This notice may not be removed or altered from any source distribution.
 //
 #include <algorithm>
+#include <climits>
 #include <cstring>
 
 #define _FONS_SOURCE_
@@ -90,9 +91,7 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
     while(num){
         auto &glyph = iter->second;
         
-        if(glyph.spacing == param.spacing && 
-           glyph.size == param.size && 
-           glyph.blur == param.blur){
+        if(glyph.size == param.size && glyph.blur == param.blur){
             
             g = &glyph;
             break;
@@ -192,7 +191,7 @@ int   Fontstash::add_font(Ref<Face> face){
 
     #if FONS_CLEARTYPE
     face->set_flags(
-        face->load_flags() | FT_LOAD_TARGET_LCD 
+        FT_LOAD_TARGET_LCD 
     );
     #endif
 
@@ -213,9 +212,12 @@ Font *Fontstash::get_font(const char *name){
     }
     return nullptr;
 }
+void  Fontstash::remove_font(int id){
+    fonts.erase(id);
+}
 
 //Context operations
-Context::Context(Fontstash &m,int w,int h):atlas(w,h){
+Context::Context(Fontstash &m,int w,int h):atlas(m.manager(),w,h){
     stash = &m;
     bitmap_w = w;
     bitmap_h = h;
@@ -231,7 +233,9 @@ Context::Context(Fontstash &m,int w,int h):atlas(w,h){
     dirty_rect[3] = 0;
 }
 Context::~Context(){
-
+    for(auto &f:fonts){
+        f->clear_cache_of(this);
+    }
 }
 
 Size Context::measure_text(const char *str,const char *end){
@@ -244,8 +248,9 @@ Size Context::measure_text(const char *str,const char *end){
     }
     Size size = {0,0};
     auto m = font->metrics_of(states.top().size);
-
-    Uint prev = 0;
+    //Using UINT_MAX as no codepoint
+    //0 means empty glyph
+    Uint prev = UINT_MAX;
 
     while(str < end){
         char32_t c = Utf8Decode(str);
@@ -257,7 +262,7 @@ Size Context::measure_text(const char *str,const char *end){
         param.blur = states.top().blur;
 
         //Send to fond
-        Glyph *g = font->get_glyph(param,FONS_GLYPH_BITMAP_REQUIRED);
+        Glyph *g = font->get_glyph(param,FONS_GLYPH_BITMAP_OPTIONAL);
         if(g == nullptr){
             //No Glyph?
             break;
@@ -268,8 +273,9 @@ Size Context::measure_text(const char *str,const char *end){
         size.height = std::max(size.height,g->height + yoffset);
         size.width += g->advance_x;
 
-        if(prev != 0){
+        if(prev != UINT_MAX){
             size.width += font->kerning(prev,c);
+            size.width += states.top().spacing;
         }
         prev = c;
     }
@@ -431,16 +437,17 @@ void Context::dump_info(FILE *fp){
 }
 
 //Atlas from nanovg
-Context::Atlas::Atlas(int w,int h){
+Context::Atlas::Atlas(Manager *m,int w,int h){
     // Allocate memory for the font stash.
     int n = 255;
     std::memset(this, 0, sizeof(Atlas));
-
+    
+    manager = m;
     width = w;
     height = h;
 
     // Allocate space for skyline nodes
-    nodes = (AtlasNode*)std::malloc(sizeof(AtlasNode) * n);
+    nodes = (AtlasNode*)manager->malloc(sizeof(AtlasNode) * n);
     memset(nodes, 0, sizeof(AtlasNode) * n);
     nnodes = 0;
     cnodes = n;
@@ -452,14 +459,14 @@ Context::Atlas::Atlas(int w,int h){
     nnodes++;
 }
 Context::Atlas::~Atlas(){
-    std::free(nodes);
+    manager->free(nodes);
 }
 bool Context::Atlas::insert_node(int idx,int x,int y,int w){
     int i;
     // Insert node
     if (nnodes+1 > cnodes) {
         cnodes = cnodes == 0 ? 8 : cnodes * 2;
-        nodes = (AtlasNode*)std::realloc(nodes, sizeof(AtlasNode) * cnodes);
+        nodes = (AtlasNode*)manager->realloc(nodes, sizeof(AtlasNode) * cnodes);
         if (nodes == nullptr)
             return false;
     }
@@ -748,7 +755,8 @@ bool TextIter::to_next(Quad *quad){
     float ith = 1.0f / context->bitmap_h;
     //Mark glyph output
     float y_offset = metrics.ascender - glyph->bitmap_top;
-    float act_x = x;
+    float x_offset = glyph->bitmap_left;
+    float act_x = x + x_offset;
     float act_y = y + y_offset;
 
     quad->x0 = act_x;
@@ -764,13 +772,21 @@ bool TextIter::to_next(Quad *quad){
 
     //Debug print
     #ifndef FONS_NDEBUG
-    printf("glyph pen_y %f bitmap_top %d height %d width %d\n",y_offset,glyph->bitmap_top,glyph->height,glyph->width);
+    printf("glyph pen_y %f bitmap_top %d height %d width %d advance_x %d\n",
+        y_offset,
+        glyph->bitmap_top,
+        glyph->height,
+        glyph->width,
+        glyph->advance_x
+    );
     #endif
     //Move forward
     nextx += glyph->advance_x;
 
     if(prevGlyphIndex != -1){
+        //Add kerning and spacing
         nextx  += font->kerning(prevGlyphIndex,ch);
+        nextx  += spacing;
     }
     prevGlyphIndex = ch;
 

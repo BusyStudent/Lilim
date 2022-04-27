@@ -18,17 +18,16 @@
         }
 #endif
 
+
 #ifndef LILIM_STBTRUETYPE
     #include <ft2build.h>
     #include FT_FREETYPE_H
     #include FT_OUTLINE_H
     #include FT_GLYPH_H
 #else
-    #ifdef LILIM_STBTRUETYPE_H
-        #include LILIM_STBTRUETYPE_H
-    #endif
-
-    #define FT_Face stbtt_fontinfo
+    #define FT_Face _lilim_fontinfo*
+    #define FT_Library void        *
+    struct _lilim_fontinfo;
 #endif
 
 #ifndef LILIM_ASSERT
@@ -44,6 +43,7 @@
 LILIM_NS_BEGIN
 
 using Uint = unsigned int;
+using Int  = int;
 
 class Manager;
 class Face;
@@ -110,10 +110,10 @@ class Ref {
         T *get() const{
             return ptr;
         }
-        T *operator->(){
+        T *operator->() const{
             return ptr;
         }
-        T &operator *(){
+        T &operator *() const{
             return *ptr;
         }
 
@@ -202,11 +202,13 @@ class Manager {
         void     *malloc (size_t size);
         void     *realloc(void *ptr,size_t size);
         void      free   (void *ptr);
+
+        template<class T>
+        T        *alloc (){
+            return static_cast<T*>(malloc(sizeof(T)));
+        }
     private:
-        #ifndef LILIM_STBTRUETYPE
-        FT_Library library;
-        #endif
-        
+        FT_Library library;        
         MemHandler memory;
 };
 
@@ -282,7 +284,7 @@ class Face: public Refable<Face> {
         void  set_style  (Uint     style);
         void  set_flags  (Uint     flags);
         void  set_lcd    (Uint     flags);
-        Uint  kerning    (Uint left,Uint right);
+        Int   kerning    (Uint left,Uint right);
         Uint  glyph_index(char32_t codepoint);
         auto  metrics()              -> FaceMetrics;
         auto  build_glyph(Uint code) -> GlyphMetrics;
@@ -310,17 +312,17 @@ class Face: public Refable<Face> {
 };
 
 //Math Utility
-inline uint32_t  FixedFloor(uint32_t x);
-inline uint32_t  FixedCeil(uint32_t x);
+inline int64_t  FixedFloor(int64_t x);
+inline int64_t  FixedCeil(int64_t x);
 //Utility
 extern char32_t  Utf8Decode(const char *&str);
 extern Ref<Blob> MapFile(const char *path);
 
 //Inline implement
-inline uint32_t FixedFloor(uint32_t x){
+inline int64_t FixedFloor(int64_t x){
     return ((x & -64) / 64);
 }
-inline uint32_t FixedCeil(uint32_t x){
+inline int64_t FixedCeil(int64_t x){
     return (((x + 63) & -64) / 64);
 }
 
@@ -380,3 +382,4 @@ LILIM_CAPI(void         ) Lilim_FreeBlob(Lilim_Blob blob);
 
 //Cleanup
 #undef FT_Face
+#undef FT_Library

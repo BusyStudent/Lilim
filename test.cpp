@@ -53,7 +53,8 @@ int main(){
 
     Fons::TextIter iter;
     Fons::Quad quad;
-    iter.init(&context,0,0,"你A好世にほん界asdsds啊啊啊哈哈哈",nullptr,FONS_GLYPH_BITMAP_REQUIRED);
+    // iter.init(&context,0,0,"你A好世にほん界asdsds啊啊啊哈哈哈",nullptr,FONS_GLYPH_BITMAP_REQUIRED);
+    iter.init(&context,0,0,"The Quick Brown Fox Jumps Over The Lazy Dog",nullptr,FONS_GLYPH_BITMAP_REQUIRED);
 
     int w,h;
     uint8_t *tex = (uint8_t*)context.get_data(&w,&h);

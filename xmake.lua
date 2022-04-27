@@ -3,6 +3,19 @@ add_rules("mode.debug", "mode.release")
 add_requires("freetype","libsdl")
 add_packages("freetype","libsdl")
 
+option("memcheck")
+    set_default(false)
+    set_showmenu(true)
+    set_category("debug")
+    set_description("Enable memory checker")
+option_end()
+
+if has_config("memcheck") then
+    add_cxxflags("-fsanitize=address")
+    add_cxxflags("-fno-omit-frame-pointer")
+    add_links("asan")
+end
+
 target("Lilim")
     set_kind("static")
     add_files("lilim.cpp")

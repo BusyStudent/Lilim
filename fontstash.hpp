@@ -29,7 +29,7 @@
 #endif
 
 #ifdef FONS_CLEARTYPE
-    #ifdef LILIM_STBTRUETYPE_H
+    #ifdef LILIM_STBTRUETYPE
         #error "backend must be freetype"
     #endif
 
@@ -40,6 +40,10 @@
     #undef  FONS_CLEARTYPE
     #define FONS_CLEARTYPE 0
     #define FONS_PIXEL uint8_t
+#endif
+
+#ifndef FONS_COLOR
+    #define FONS_COLOR Uint
 #endif
 
 #include <unordered_map>
@@ -74,6 +78,7 @@ FONS_NS_BEGIN
 
 using namespace LILIM_NAMESPACE;
 using Pixel = FONS_PIXEL;
+using Color = FONS_COLOR;
 //Interface for nanovg
 class Context;
 class Fontstash;
@@ -161,6 +166,7 @@ class Fontstash {
         int   add_font(Ref<Face> font);
         Font *get_font(const char *name);
         Font *get_font(int id);
+        void  remove_font(int id);
 
         Manager *manager() const noexcept{
             return _manager;
@@ -211,6 +217,9 @@ class Context {
         void set_align(int align){
             states.top().align = align;
         }
+        void set_color(Color color){
+            states.top().color = color;
+        }
 
         void expand_atlas(int width,int height);
         void reset_atlas(int width,int height);
@@ -245,13 +254,14 @@ class Context {
         void  add_font(int id);
         void  remove_font(int id);
         void  dump_info(FILE *f = stdout);
-    private:
+    protected:
         struct State {
             int align = FONS_ALIGN_LEFT | FONS_ALIGN_BASELINE;
             int font = 0;
             int blur = 0;
-            int spacing = 0;
+            float spacing = 0;
             float size = 12;
+            Color color = {};
         };
         // Atlas based on Skyline Bin Packer by Jukka Jylänki
         // From nanovg
@@ -261,13 +271,15 @@ class Context {
             short width = 0;
         };
         struct Atlas {
-            Atlas(int w,int h);
+            Atlas(Manager *manager,int w,int h);
             ~Atlas();
 
+            Manager  *manager;
             int width, height;
             AtlasNode* nodes;
             int nnodes;
             int cnodes;
+
 
             void reset(int width,int height);
             void expend(int width,int height);
@@ -288,6 +300,32 @@ class Context {
     friend class TextIter;
     friend class Font;
 };
+
+#ifndef FONS_MINI
+class Vertex {
+    public:
+        int glyph_w;
+        int glyph_h;
+        int glyph_x;
+        int glyph_y;
+
+        float screen_x;
+        float screen_y;
+        float screen_w;
+        float screen_h;
+
+        Color c;
+};
+
+class TextRenderer : private Context {
+    protected:
+        virtual void render_create(int width,int height) = 0;
+        virtual void render_update(int width,int height) = 0;
+        virtual void render_destroy() = 0;
+        virtual void render_draw(const Vertex *vertices,int nvertices) = 0;
+        virtual void render_flush() = 0;    
+};
+#endif
 
 class Quad {
     public:

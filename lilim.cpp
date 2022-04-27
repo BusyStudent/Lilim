@@ -14,6 +14,35 @@
     #include <fcntl.h>
 #endif
 
+//Stb truetype includes
+#ifdef LILIM_STBTRUETYPE
+    #define STB_TRUETYPE_IMPLEMENTATION
+    #define STBTT_STATIC
+
+    //Hook malloc / free
+    #define STBTT_malloc(size,up)  _lilim_malloc(size,up)
+    #define STBTT_free(ptr,up)     _lilim_free(ptr,up)
+
+    static void *_lilim_malloc(size_t size,void *up){
+        return static_cast<LILIM_NAMESPACE::Manager*>(up)->malloc(size);
+    }
+    static void  _lilim_free  (void *ptr,void *up){
+        return static_cast<LILIM_NAMESPACE::Manager*>(up)->free(ptr);
+    }
+
+    #include "stb_truetype.h"
+    #include <cmath>
+
+    //Replace some Freetype Function
+    #define FT_Init_FreeType(a) 0
+    #define FT_Done_FreeType(a)
+
+    struct _lilim_fontinfo : stbtt_fontinfo {
+        LILIM_NAMESPACE::FaceSize size;
+    };
+
+#endif
+
 LILIM_NS_BEGIN
 
 //Manager
@@ -31,6 +60,8 @@ Manager::Manager(){
 Manager::~Manager(){
     FT_Done_FreeType(library);
 }
+
+#ifndef LILIM_STBTRUETYPE
 Ref<Face> Manager::new_face(Ref<Blob> blob,int index){
     FT_Bytes bytes = static_cast<FT_Bytes>(blob->data());
     FT_Long  size  = static_cast<FT_Long>(blob->size());
@@ -46,6 +77,32 @@ Ref<Face> Manager::new_face(Ref<Blob> blob,int index){
     ret->idx     = index;
     return ret;
 }
+#else
+Ref<Face> Manager::new_face(Ref<Blob> blob,int index){
+    uint8_t *bytes = static_cast<uint8_t*>(blob->data());
+    int      size  = static_cast<int>(blob->size());
+    int     offset = stbtt_GetFontOffsetForIndex(bytes,index);
+    auto     face  = alloc<_lilim_fontinfo>();
+    if(offset < 0){
+        //Failed to Get the offset
+        free(face);
+        return {};
+    }
+    face->userdata = this;
+    if(!stbtt_InitFont(face,bytes,offset)){
+        //Failed to initialize font
+        free(face);
+        return {};
+    }
+    Ref<Face> ret = new Face();
+    ret->manager = this;
+    ret->blob    = blob;
+    ret->face    = face;
+    ret->idx     = index;
+    return ret;
+}
+#endif
+
 Ref<Face> Manager::new_face(const char *path,int index){
     //TODO : This is not a good way to do it, we should use a better way
     //For easy implementation face clone, we use mmap to load font file
@@ -68,7 +125,8 @@ Ref<Blob> Manager::alloc_blob(size_t size){
     return ret;
 }
 
-//Face
+#ifndef LILIM_STBTRUETYPE
+//Freetype Face
 Face::Face(){
     flags = FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT;
     manager = nullptr;
@@ -101,7 +159,7 @@ void  Face::set_size(Uint size){
 Uint  Face::glyph_index(char32_t codepoint){
     return FT_Get_Char_Index(face,codepoint);
 }
-Uint  Face::kerning(Uint prev,Uint cur){
+Int   Face::kerning(Uint prev,Uint cur){
     FT_Vector delta;
     FT_Error err;
     err = FT_Get_Kerning(face,prev,cur,FT_KERNING_DEFAULT,&delta);
@@ -133,7 +191,10 @@ auto  Face::metrics() -> FaceMetrics{
     return metrics;
 }
 auto  Face::build_glyph(Uint code) -> GlyphMetrics{
-    FT_Load_Glyph(face,code,flags);
+    if(FT_Load_Glyph(face,code,flags)){
+        //Error
+        std::abort();
+    }
     FT_GlyphSlot slot = face->glyph;
     GlyphMetrics ret;
 
@@ -145,7 +206,7 @@ auto  Face::build_glyph(Uint code) -> GlyphMetrics{
     ret.advance_x   = slot->advance.x >> 6;
 
     //LCD mode
-    if(flags & FT_LOAD_TARGET_LCD == FT_LOAD_TARGET_LCD){
+    if((flags & FT_LOAD_TARGET_LCD) == FT_LOAD_TARGET_LCD){
         LILIM_ASSERT(ret.width % 3 == 0);
         ret.width /= 3;
     }
@@ -177,22 +238,28 @@ void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
         case FT_PIXEL_MODE_LCD:{
             //Write to RGBA buffer
             uint8_t *pixels = static_cast<uint8_t*>(b);
-            int width = slot->bitmap.width;
-            int row   = slot->bitmap.rows / 3;
+            uint8_t *buffer = slot->bitmap.buffer;
+            int width = slot->bitmap.width / 3;
+            int row   = slot->bitmap.rows;
 
             for(int y = 0;y < row;y++){
+                uint8_t *cur = buffer;//Current Buffer
                 for(int x = 0;x < width;x++){
                     uint32_t *dst = reinterpret_cast<uint32_t*>(
                         pixels + (pen_y + y) * pitch +
-                        (pen_x + x) * 4
+                                 (pen_x + x) * 4
                     );
-                    uint8_t  *src = &slot->bitmap.buffer[y * width * 3 + x];
                     //Begin Pack
                     uint32_t pix = 0;
-                    pix |= uint32_t(src[0]) << 24;
-                    pix |= uint32_t(src[1]) << 16;
-                    pix |= uint32_t(src[2]) << 8;
+                    pix |= cur[0] << 24;
+                    pix |= cur[1] << 16;
+                    pix |= cur[2] << 8;
+                    *dst = pix;
+
+                    cur += 3;
                 }
+                //End Move to next row
+                buffer += slot->bitmap.pitch;
             }
             break;
         }
@@ -201,6 +268,108 @@ void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
             LILIM_ASSERT(false);
     }
 }
+#else
+//Stb TrueType  Face
+Face::Face(){
+    flags = 0;
+    manager = nullptr;
+    face    = nullptr;
+    xdpi    = 0;
+    ydpi    = 0;
+    idx     = 0;
+}
+Face::~Face(){
+    manager->free(face);
+}
+void  Face::set_size(FaceSize size){
+    face->size = size;
+}
+void  Face::set_size(Uint size){
+    FaceSize s;
+    s.width = size;
+    s.height = size;
+    s.xdpi = xdpi ? xdpi : 72;
+    s.ydpi = ydpi ? ydpi : 72;
+
+    face->size = s;
+}
+Uint  Face::glyph_index(char32_t codepoint){
+    return stbtt_FindGlyphIndex(face,codepoint);
+}
+Int   Face::kerning(Uint prev,Uint cur){
+    return stbtt_GetGlyphKernAdvance(face,prev,cur);
+}
+auto  Face::metrics() -> FaceMetrics{
+    FaceMetrics metrics;
+    //Get metrics
+    int ascender;
+    int descender;
+    int linegap;
+    float scale = stbtt_ScaleForPixelHeight(face,face->size.height);
+    stbtt_GetFontVMetrics(face,&ascender,&descender,&linegap);
+    //Scale it by size
+    metrics.ascender    = std::ceil(ascender * scale);
+    metrics.descender   = std::ceil(descender * scale);
+    metrics.height      = std::ceil((ascender - descender) * scale);
+    metrics.max_advance = -1; // Not supported
+    metrics.underline_position = -1; // Not supported
+    metrics.underline_thickness = -1; // Not supported
+    return metrics;
+}
+auto  Face::build_glyph(Uint code) -> GlyphMetrics{
+    GlyphMetrics ret;
+    //Get metrics
+    int advance;
+    int lsb;
+    int x0,y0,x1,y1;
+    float yscale = stbtt_ScaleForPixelHeight(face,face->size.height);
+    float xscale = stbtt_ScaleForPixelHeight(face,face->size.height);
+    //Process with dpi
+    yscale *= face->size.ydpi / 72.0f;
+    xscale *= face->size.xdpi / 72.0f;
+
+    stbtt_GetGlyphHMetrics(face,code,&advance,&lsb);
+    stbtt_GetGlyphBitmapBox(face,code,xscale,yscale,&x0,&y0,&x1,&y1);
+
+    ret.width  = x1 - x0;
+    ret.height = y1 - y0;
+    ret.bitmap_left = x0;
+    ret.bitmap_top  = -y0;
+    ret.advance_x   = advance * xscale;
+
+    return ret;
+}
+void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
+    int x0,y0,x1,y1;
+    float yscale = stbtt_ScaleForPixelHeight(face,face->size.height);
+    float xscale = stbtt_ScaleForPixelHeight(face,face->size.height);
+    //Process with dpi
+    yscale *= face->size.ydpi / 72.0f;
+    xscale *= face->size.xdpi / 72.0f;
+
+    stbtt_GetGlyphBitmapBox(face,code,xscale,yscale,&x0,&y0,&x1,&y1);
+
+    int width  = x1 - x0;
+    int height = y1 - y0;
+
+    uint8_t *buffer = static_cast<uint8_t*>(b);
+    uint8_t *pixels = buffer + (pen_y) * pitch + (pen_x);
+    int      stride = pitch;
+
+    //Rasterize
+    stbtt_MakeGlyphBitmap(
+        face,
+        pixels,
+        width,
+        height,
+        stride,
+        scale,
+        scale,
+        code
+    );
+}
+#endif
+
 auto  Face::measure_text(const char *text,const char *end) -> Size{
     int w = 0;
     int h = 0;
@@ -259,9 +428,10 @@ auto  Face::render_text(const char *text,const char *end) -> Bitmap{
         Uint idx = glyph_index(ch);
         GlyphMetrics glyph = build_glyph(idx);
 
-        int pen_y = m.ascender - glyph.bitmap_top;
+        int y_offset = m.ascender - glyph.bitmap_top;
+        int x_offset = glyph.bitmap_left;
 
-        render_glyph(idx,data,pitch,pen_x,pen_y);
+        render_glyph(idx,data,pitch,pen_x + x_offset,pen_y + y_offset);
 
         //Move pen
         pen_x += glyph.advance_x;
@@ -279,10 +449,13 @@ auto  Face::render_text(const char *text,const char *end) -> Bitmap{
     return ret;
 }
 Ref<Face> Face::clone(){
-    return manager->new_face(
+    auto face = manager->new_face(
         blob,
         idx
     );
+    face->set_dpi(xdpi,ydpi);
+    face->set_flags(flags);
+    return face;
 }
 
 //Utility functions    
@@ -340,7 +513,7 @@ char32_t  Utf8Decode(const char *&str){
 }
 
 Ref<Blob> MapFile(const char *file){
-    #ifdef _WIN32
+#ifdef _WIN32
     //Convert to wide string
     size_t len = std::strlen(file);
     wchar_t *wfile = new wchar_t[len + 1];
@@ -385,7 +558,7 @@ Ref<Blob> MapFile(const char *file){
     blob->set_finalizer([](void *data, size_t size, void *user){
         UnmapViewOfFile(data);
     }, nullptr);
-    #elif defined(__linux)
+#elif defined(__linux)
     //Mmap
     int fd = open(file,O_RDONLY);
     if(fd == -1){
@@ -403,7 +576,7 @@ Ref<Blob> MapFile(const char *file){
     blob->set_finalizer([](void *data, size_t size, void *user){
         munmap(data,size);
     },nullptr);
-    #else
+#else
     //Read all file into memory
     FILE *fp = std::fopen(file,"rb");
     std::fseek(fp,SEEK_END,0);
@@ -425,7 +598,7 @@ Ref<Blob> MapFile(const char *file){
         return {};
     }
     std::fclose(fp);
-    #endif
+#endif
     return blob;
 }
 
