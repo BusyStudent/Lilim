@@ -10,6 +10,17 @@
     #endif
 #endif
 
+#ifdef FONS_NDEBUG
+    #define FONS_LOG(...)
+#else
+    #define FONS_LOG(...) \ 
+    {\
+        printf("[%s:%s:%d] ",__FILE__,__FUNCTION__,__LINE__);\
+        printf(__VA_ARGS__);\
+        printf("\n");\
+    }
+#endif
+
 #ifdef FONS_STATIC
     #define FONS_NS_BEGIN \
         namespace { \
@@ -24,8 +35,13 @@
         }
 #endif
 
+//User defined params limit
 #ifndef FONS_MAX_CACHED_GLYPHS
     #define FONS_MAX_CACHED_GLYPHS (1024 * 4)
+#endif
+
+#ifndef FONS_MAX_FONT_SIZE
+    #define FONS_MAX_FONT_SIZE 100
 #endif
 
 #ifdef FONS_CLEARTYPE
@@ -72,6 +88,17 @@ enum {
 enum {
 	FONS_GLYPH_BITMAP_OPTIONAL = 0,
 	FONS_GLYPH_BITMAP_REQUIRED = 1,
+};
+
+enum {
+	// Font atlas is full.
+	FONS_ATLAS_FULL = 1,
+	// Scratch memory used to render glyphs is full, requested size reported in 'val', you may need to bump up FONS_SCRATCH_BUF_SIZE.
+	FONS_SCRATCH_FULL = 2,
+	// Calls to fonsPushState has created too large stack, if you need deep state stack bump up FONS_MAX_STATES.
+	FONS_STATES_OVERFLOW = 3,
+	// Trying to pop too many states fonsPopState().
+	FONS_STATES_UNDERFLOW = 4,
 };
 
 FONS_NS_BEGIN
@@ -177,6 +204,8 @@ class Fontstash {
         Manager             *_manager;
     friend class Font;
 };
+
+typedef bool (*ErrorHandler)(void *uptr,int error,int val);
 /**
  * @brief For managing bitmaps and atlas
  * 
@@ -234,6 +263,10 @@ class Context {
             }
             return bitmap.data();
         }
+        //< Check has dirty rect?
+        bool has_dirty() const noexcept{
+            return dirty_rect[0] < dirty_rect[2] && dirty_rect[1] < dirty_rect[3];
+        }
         bool  validate(int *dirty);
 
         Size  measure_text(const char *text,const char *end = nullptr);
@@ -244,6 +277,14 @@ class Context {
         //Get Fontstash
         Fontstash *fontstash() const noexcept{
             return stash;
+        }
+        Manager   *manager() const noexcept{
+            return stash->manager();
+        }
+
+        void set_error_handler(ErrorHandler handler,void *uptr){
+            this->handler = handler;
+            this->user = uptr;
         }
         /**
          * @brief Register a font in context
@@ -289,14 +330,20 @@ class Context {
             int  rect_fits(int i,int w,int h);
             bool add_rect(int x,int y,int *w,int *h);
         };
+        bool handle_atlas_full();
+
         std::set<Ref<Font>>     fonts;
         std::vector<Pixel>      bitmap;
         std::stack<State>       states;
         Atlas                   atlas;
         Fontstash              *stash;
+        //Bitmap
         int                     bitmap_w;
         int                     bitmap_h;
         int                     dirty_rect[4];
+        //Error handler
+        ErrorHandler            handler;
+        void                   *user;
     friend class TextIter;
     friend class Font;
 };
@@ -304,11 +351,12 @@ class Context {
 #ifndef FONS_MINI
 class Vertex {
     public:
+        //< Glyph in bitmap
         int glyph_w;
         int glyph_h;
         int glyph_x;
         int glyph_y;
-
+        //< Output Rect
         float screen_x;
         float screen_y;
         float screen_w;
@@ -317,13 +365,51 @@ class Vertex {
         Color c;
 };
 
-class TextRenderer : private Context {
+class TextRenderer : protected Context {
+    public:
+        TextRenderer(Fontstash &stash,int width = 512,int height = 512);
+        TextRenderer(const TextRenderer &) = delete;
+        virtual ~TextRenderer();
+
+        //Using Push/Pop State
+        using Context::push_state;
+        using Context::pop_state;
+        using Context::clear_state;
+
+        //Using Set State
+        using Context::set_font;
+        using Context::set_size;
+        using Context::set_spacing;
+        using Context::set_blur;
+        using Context::set_align;
+        using Context::set_color;
+
+        //Using measure
+        using Context::measure_text;
+        using Context::vert_metrics;
+        using Context::line_bounds;
+
+        void flush();
+        void draw_text(float x,float y,const char *text,const char *end = nullptr);
+
+        //Atlas operations
+        void expand(int width,int height);
+        void reset(int width,int height);
+
+        Size atlas_size(){
+            int w,h;
+            get_atlas_size(&w,&h);
+            return {w,h};
+        }
     protected:
-        virtual void render_create(int width,int height) = 0;
-        virtual void render_update(int width,int height) = 0;
-        virtual void render_destroy() = 0;
+        virtual void render_update(int x,int y,int w,int h) = 0;
+        virtual void render_resize(int w,int h) = 0;
         virtual void render_draw(const Vertex *vertices,int nvertices) = 0;
-        virtual void render_flush() = 0;    
+        virtual void render_flush() = 0;
+    private:
+        void add_vert(const Vertex &vert);
+
+        std::vector<Vertex> vertices;
 };
 #endif
 

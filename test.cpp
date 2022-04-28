@@ -13,12 +13,15 @@
     #define FONT_FILE "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 #endif
 
+
+#define FONS_SDL_RENDERER
+#include "fons_backend.hpp"
+
 int main(){
     Lilim::Manager manager;
     Lilim::FaceSize size;
 
     Fons::Fontstash stash(manager);
-    Fons::Context context(stash);
 
     // auto face = manager.new_face("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",0);
     auto face = manager.new_face(FONT_FILE,0);
@@ -41,160 +44,121 @@ int main(){
     // std::cout << m.max_advance << std::endl;
 
     int id = stash.add_font(face);
-    context.add_font(id);
-    context.set_align(FONS_ALIGN_LEFT | FONS_ALIGN_TOP);
-    context.set_size(12);
-    context.set_font(id);
 
     // auto ssize = context.measure_text("你好世界");
     // auto fsize = face->measure_text("你好世界");
     // std::cout << "w:" << ssize.width << " h:" << ssize.height << std::endl;
     // std::cout << "w:" << fsize.width << " h:" << fsize.height << std::endl;
 
-    Fons::TextIter iter;
-    Fons::Quad quad;
-    // iter.init(&context,0,0,"你A好世にほん界asdsds啊啊啊哈哈哈",nullptr,FONS_GLYPH_BITMAP_REQUIRED);
-    iter.init(&context,0,0,"The Quick Brown Fox Jumps Over The Lazy Dog",nullptr,FONS_GLYPH_BITMAP_REQUIRED);
+    //Create a window / renderer
+    SDL_Window *window = SDL_CreateWindow("Hello World!", 0, 0, 640, 480, SDL_WINDOW_SHOWN);
+    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
-    int w,h;
-    uint8_t *tex = (uint8_t*)context.get_data(&w,&h);
+    auto context = new Fons::SDLTextRenderer(renderer,stash,640,480);
 
-    int surf_w = iter.width;
-    int surf_h = iter.height;
+    // context->add_font(id);
+    float cur_size = 12;
+    float cur_spacing = 0;
 
-    std::cout << "w:" << surf_w << " h:" << surf_h << std::endl;
+    context->set_size(cur_size);
+    context->set_font(id);
+    context->set_spacing(cur_spacing);
 
-    SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(
-        0,
-        surf_w,
-        surf_h,
-        32,
-        SDL_PIXELFORMAT_RGBA32
-    );
-    Uint32 *pixel = (Uint32*)surf->pixels;
-
-    while(iter.to_next(&quad)){
-        //Output quad
-        printf("Dst(%f,%f,%f,%f)\n",quad.x0,quad.y0,quad.x1,quad.y1);
-        printf("InTex(%f,%f,%f,%f)\n\n",quad.s0,quad.t0,quad.s1,quad.t1);
-
-        //Print them in tex
-        float d_w = quad.s1 - quad.s0;
-        float d_h = quad.t1 - quad.t0;
-        float d_x = quad.s0;
-        float d_y = quad.t0;
-
-        d_w *= w;
-        d_h *= h;
-        d_x *= w;
-        d_y *= h;
-
-        int to_x = quad.x0;
-        int to_y = quad.y0;
-
-        printf("Glyph(%d,%d)\n\n",int(d_w),int(d_h));
-
-        // for(int y = 0;y < d_h; y++){
-        //     for(int x = 0;x < d_w; x++){
-        //         std::cout << (tex[int((y + d_y) * w + (x + d_x))] ? '#' : ' '); 
-        //     }
-        //     std::cout << std::endl;
-        // }
-        for(int y = 0;y < d_h; y++){
-            for(int x = 0;x < d_w; x++){
-                Uint8 pix = tex[int((y + d_y) * w + (x + d_x))];
-
-                pixel[(y + to_y) * surf->w + (x + to_x)] = SDL_MapRGBA(
-                    surf->format,
-                    0,
-                    0,
-                    0,
-                    pix
-                );
-            }
-        }
-    }
-
-    context.dump_info();
-
-    int dirty[4];
-    if(context.validate(dirty)){
-        printf("Dirty (%d,%d,%d,%d)\n",dirty[0],dirty[1],dirty[2],dirty[3]);
-    }
-
-
-
-    // for(int y = 0; y < h; y++){
-    //     for(int x = 0; x < w; x++){
-    //         std::cout << (tex[y * w + x] ? '#' : ' ');
-    //     }
-    //     std::cout << std::endl;
-    // }
-
-//     auto bitmap = face->render_text("你好H世E界LM啊A啊S啦A啦S");
-    
-
-//     //Print bitmap
-//     for(int y = 0; y < bitmap.height; y++){
-//         for(int x = 0; x < bitmap.width; x++){
-//             std::cout << (bitmap->as<uint8_t>()[y * bitmap.width + x] ? '#' : ' ');
-//         }
-//         std::cout << std::endl;
-//     }
-
-    SDL_Init(SDL_INIT_VIDEO);
-    SDL_Window *window = SDL_CreateWindow("Hello World",
-        SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED,
-        640,
-        480,
-        SDL_WINDOW_SHOWN
-    );
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
-//     SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormat(
-//         0,
-//         bitmap.width,
-//         bitmap.height,
-//         32,
-//         SDL_PIXELFORMAT_RGBA32
-//     );
-//     //Copy bitmap to surface
-//     Uint32 *pixels = static_cast<Uint32*>(surface->pixels);
-//     for(int y = 0; y < bitmap.height; y++){
-//         for(int x = 0; x < bitmap.width; x++){
-//             pixels[y * bitmap.width + x] = SDL_MapRGBA(
-//                 surface->format,
-//                 bitmap->as<uint8_t>()[y * bitmap.width + x],
-//                 bitmap->as<uint8_t>()[y * bitmap.width + x],
-//                 bitmap->as<uint8_t>()[y * bitmap.width + x],
-//                 255
-//             );
-//         }
-//     }
-
-    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer,surf);
-
-    SDL_Rect dst = {
-        0,
-        0,
-        surf->w,
-        surf->h
-    };
 
     SDL_Event event;
+    float x_offset = 0;
+    float y_offset = 0;
+
     while(SDL_WaitEvent(&event)){
         if(event.type == SDL_QUIT){
             break;
         }
-        SDL_SetRenderDrawColor(renderer,255,255,255,255);
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, nullptr, &dst);
-        SDL_RenderPresent(renderer);
+        if(event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_EXPOSED){
+            redraw:
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            SDL_RenderClear(renderer);
+
+            context->set_spacing(cur_spacing);
+            context->set_size(cur_size);
+            context->set_align(FONS_ALIGN_BOTTOM | FONS_ALIGN_CENTER);  // Align to bottom and center
+
+            context->set_color(0xFFFF00FF);
+            context->draw_text(0 + x_offset,0 + y_offset,"The Quick Brown Fox Jumps Over The Lazy Dog");
+
+            context->set_color(0xFF0000FF);
+            context->draw_text(0 + x_offset,40 + y_offset,"欲穷千里目，更上一层楼");
+
+            context->set_color(0x00FF00FF);
+            context->draw_text(0 + x_offset,80 + y_offset,"貧しくなりたいなら、次のレベルに進んでください");
+
+            context->set_color(0x00FFFFFF);
+            context->draw_text(0 + x_offset,120 + y_offset,"Если хочешь быть бедным, переходи на следующий уровень");
+
+            context->flush();
+            //Draw Detail info
+            char tmp_buf[256];
+            SDL_Rect detail_rect = {
+                0,0,100,50
+            };
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            SDL_RenderFillRect(renderer,&detail_rect);
+            //DRAW Info
+            sprintf(tmp_buf,"size:%d",int(cur_size));
+            context->set_align(FONS_ALIGN_TOP | FONS_ALIGN_LEFT);
+            context->set_color(0x000000FF);
+            context->set_spacing(0);
+            context->set_size(12);
+
+            context->draw_text(0,0,tmp_buf);
+
+            sprintf(tmp_buf,"spacing:%d",int(cur_spacing));
+            context->draw_text(0,20,tmp_buf);
+
+            context->flush();
+
+            SDL_RenderPresent(renderer);
+            continue;
+        }
+        if(event.type == SDL_MOUSEBUTTONDOWN){
+            x_offset = event.button.x;
+            y_offset = event.button.y;
+
+            goto redraw;
+        }
+        if(event.type == SDL_KEYDOWN){
+            if(event.key.keysym.sym == SDLK_UP){
+                cur_size += 1;
+                goto redraw;
+            }
+            if(event.key.keysym.sym == SDLK_DOWN){
+                cur_size -= 1;
+                goto redraw;
+            }
+            if(event.key.keysym.sym == SDLK_LEFT){
+                cur_spacing -= 1;
+                goto redraw;
+            }
+            if(event.key.keysym.sym == SDLK_RIGHT){
+                cur_spacing += 1;
+                goto redraw;
+            }
+
+        }
+        if(event.type == SDL_MOUSEWHEEL){
+            if(event.wheel.y > 0){
+                cur_size += 1;
+                goto redraw;
+            }
+            if(event.wheel.y < 0){
+                cur_size -= 1;
+                goto redraw;
+            }
+        }
     }
 
+    delete context;
 
-    SDL_DestroyTexture(texture);
-    SDL_FreeSurface(surf);
+    //CLeanup
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

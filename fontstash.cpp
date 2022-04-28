@@ -49,7 +49,13 @@ Ref<Font> Font::clone(){
 Glyph *Font::get_glyph(FontParams param,int req_bitmap){
     //Clear cache if too big
     if(glyphs.size() > FONS_MAX_CACHED_GLYPHS){
+        FONS_LOG("Too many glyphs in cache, clear it");
         glyphs.clear();
+    }
+    //Check params
+    if(param.size <= 0 || param.size > FONS_MAX_FONT_SIZE){
+        FONS_LOG("Invalid font size");
+        return nullptr;
     }
 
     Glyph *g = nullptr;
@@ -120,7 +126,7 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
         int x,y;
         auto m = face->build_glyph(idx);
         //Alloc space
-        bool v = param.context->atlas.add_rect(
+        bool v = ctxt->atlas.add_rect(
             m.width,
             m.height,
             &x,
@@ -128,7 +134,25 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
         );
         //Atlas full
         if(!v){
-            return nullptr;
+            //Try to slove it
+            if(!ctxt->handle_atlas_full()){
+                //No solution
+                FONS_LOG("Fail to add glyph to atlas");
+                return nullptr;
+            }
+            v = ctxt->atlas.add_rect(
+                m.width,
+                m.height,
+                &x,
+                &y
+            );
+            if(!v){
+                //No solution
+                FONS_LOG("Fail to add glyph to atlas");
+                return nullptr;
+            }
+            //Sloved
+            FONS_LOG("Success to slove atlas full");
         }
 
         g->x = x;
@@ -136,8 +160,8 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
         //Rasterize
         face->render_glyph(
             idx,
-            param.context->bitmap.data(),
-            param.context->bitmap_w * bytes_per_pixels,
+            ctxt->bitmap.data(),
+            ctxt->bitmap_w * bytes_per_pixels,
             x,
             y
         );
@@ -145,7 +169,7 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
             //TODO blur
         }
         //Update dirty
-        int *dirty = param.context->dirty_rect;
+        int *dirty = ctxt->dirty_rect;
         dirty[0] = std::min(dirty[0],x);
         dirty[1] = std::min(dirty[1],y);
         dirty[2] = std::max(dirty[2],x + g->width);
@@ -231,6 +255,10 @@ Context::Context(Fontstash &m,int w,int h):atlas(m.manager(),w,h){
     dirty_rect[1] = h;
     dirty_rect[2] = 0;
     dirty_rect[3] = 0;
+
+    //Init Error handler
+    handler = nullptr;
+    user    = nullptr;
 }
 Context::~Context(){
     for(auto &f:fonts){
@@ -250,6 +278,7 @@ Size Context::measure_text(const char *str,const char *end){
     auto m = font->metrics_of(states.top().size);
     //Using UINT_MAX as no codepoint
     //0 means empty glyph
+    bool first = true;
     Uint prev = UINT_MAX;
 
     while(str < end){
@@ -260,6 +289,15 @@ Size Context::measure_text(const char *str,const char *end){
         param.spacing = states.top().spacing;
         param.size = states.top().size;
         param.blur = states.top().blur;
+        //Kerning / Spacing
+        if(!first){
+            size.width += font->kerning(prev,c);
+            size.width += states.top().spacing;
+        }
+        else{
+            first = false;
+        }
+        prev = c;
 
         //Send to fond
         Glyph *g = font->get_glyph(param,FONS_GLYPH_BITMAP_OPTIONAL);
@@ -272,12 +310,6 @@ Size Context::measure_text(const char *str,const char *end){
         size.height = std::max(size.height,g->height);
         size.height = std::max(size.height,g->height + yoffset);
         size.width += g->advance_x;
-
-        if(prev != UINT_MAX){
-            size.width += font->kerning(prev,c);
-            size.width += states.top().spacing;
-        }
-        prev = c;
     }
     return size;
 }
@@ -434,6 +466,14 @@ void Context::dump_info(FILE *fp){
         fprintf(fp,"    DirtyRect empty:\n");
     }
     #endif
+}
+//Error Handler
+bool Context::handle_atlas_full(){
+    if(!handler){
+        //No handler
+        return false;
+    }
+    return handler(user,FONS_ATLAS_FULL,0);
 }
 
 //Atlas from nanovg
@@ -681,6 +721,148 @@ void TransformByAlign(
     *x = ix;
     *y = iy;
 }
+
+#ifndef FONS_MINI
+//TextRenderer
+TextRenderer::TextRenderer(Fontstash &s,int w,int h):Context(s,w,h){
+    set_error_handler([](void *self,int code,int) -> bool{
+        if(code != FONS_ATLAS_FULL){
+            return false;//Unhandled error
+        }
+        //Resize
+        TextRenderer *t = (TextRenderer*)self;
+        int w,h;
+        t->get_atlas_size(&w,&h);
+        t->expand(
+            w * 2,
+            h * 2
+        );
+        
+        FONS_LOG("Resize atlas to %d,%d",w,h);
+
+        return true;
+    },this);
+}
+TextRenderer::~TextRenderer(){
+
+}
+void TextRenderer::draw_text(float x,float y,const char *str,const char *end){
+    if(end == nullptr){
+        end = str + std::strlen(str);
+    }
+    auto font = stash->get_font(states.top().font);
+    if(font == nullptr){
+        return;
+    }
+    //Get size
+    auto size = measure_text(str,end);
+    //Begin iterator
+    auto m = font->metrics_of(states.top().size);
+    //Is first?
+    bool first = true;
+    Uint prev = 0;
+
+    //Transform back
+    TransformByAlign(
+        &x,&y,
+        states.top().align,
+        size,
+        m
+    );
+
+    while(str < end){
+        char32_t c = Utf8Decode(str);
+        FontParams param;
+        param.context = this;
+        param.codepoint = c;
+        param.spacing = states.top().spacing;
+        param.size = states.top().size;
+        param.blur = states.top().blur;
+        //Kerning / Spacing
+        if(!first){
+            x += font->kerning(prev,c);
+            x += states.top().spacing;
+        }
+        else{
+            first = false;
+        }
+        prev = c;
+
+        //Send to find
+        Glyph *g = font->get_glyph(param,FONS_GLYPH_BITMAP_REQUIRED);
+        if(g == nullptr){
+            //No Glyph?
+            break;
+        }
+        float yoffset = m.ascender - g->bitmap_top;
+        float xoffset = g->bitmap_left;
+
+        //Make vert
+        Vertex vert;
+
+        vert.glyph_x = g->x;
+        vert.glyph_y = g->y;
+        vert.glyph_w = g->width;
+        vert.glyph_h = g->height;
+
+        //Screen dst
+        vert.screen_x = x + xoffset;
+        vert.screen_y = y + yoffset;
+        vert.screen_w = g->width;
+        vert.screen_h = g->height;
+
+        vert.c = states.top().color;
+
+        //Add vert
+        add_vert(vert);
+
+        //Move forward
+        x += g->advance_x;
+    }
+}
+void TextRenderer::flush(){
+    if(has_dirty()){
+        //Notify update dirty
+
+        int dirty[4];
+        validate(dirty);
+
+        int x = dirty[0];
+        int y = dirty[1];
+        int w = dirty[2] - dirty[0];
+        int h = dirty[3] - dirty[1];
+
+        render_update(x,y,w,h);
+    }
+    if(!vertices.empty()){
+        //Let renderer draw
+
+        render_draw(vertices.data(),vertices.size());
+        render_flush();
+        vertices.clear();
+    }
+}
+void TextRenderer::add_vert(const Vertex &vert){
+    vertices.push_back(vert);
+}
+void TextRenderer::expand(int w,int h){
+    //First flush the current vertices
+    flush();
+    //Expand the atlas
+    Context::expand_atlas(w,h);
+    //Notify the render
+    render_resize(w,h);
+}
+void TextRenderer::reset(int w,int h){
+    //First flush the current vertices
+    flush();
+    //Reset the atlas
+    Context::reset_atlas(w,h);
+    //Notify the render
+    render_resize(w,h);
+}
+#endif
+
 //Text Iterator
 bool TextIter::init(Context *ctxt,float x,float y,const char* str,const char* end,int bitmapOption){
     //Zero first
@@ -735,8 +917,6 @@ bool TextIter::to_next(Quad *quad){
         return false;
     }
     char32_t ch = Utf8Decode(str);
-    x = nextx;
-    y = nexty;
 
     FontParams params;
     params.codepoint = ch;
@@ -749,6 +929,16 @@ bool TextIter::to_next(Quad *quad){
     if(glyph == nullptr){
         return false;
     }
+
+    if(prevGlyphIndex != -1){
+        //Add kerning and spacing
+        nextx  += font->kerning(prevGlyphIndex,ch);
+        nextx  += spacing;
+    }
+    prevGlyphIndex = ch;
+
+    x = nextx;
+    y = nexty;
 
     //Generate quad
     float itw = 1.0f / context->bitmap_w;
@@ -782,13 +972,6 @@ bool TextIter::to_next(Quad *quad){
     #endif
     //Move forward
     nextx += glyph->advance_x;
-
-    if(prevGlyphIndex != -1){
-        //Add kerning and spacing
-        nextx  += font->kerning(prevGlyphIndex,ch);
-        nextx  += spacing;
-    }
-    prevGlyphIndex = ch;
 
     return true;
 }

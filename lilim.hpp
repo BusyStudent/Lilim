@@ -265,6 +265,10 @@ enum LCD : Uint {
     LCDHorizontal = 1 << 1,
 };
 
+/**
+ * @brief Face Interface
+ * 
+ */
 class Face: public Refable<Face> {
     public:
         Face(const Face &) = delete;
@@ -283,9 +287,10 @@ class Face: public Refable<Face> {
         void  set_size   (Uint     size);
         void  set_style  (Uint     style);
         void  set_flags  (Uint     flags);
-        void  set_lcd    (Uint     flags);
+
         Int   kerning    (Uint left,Uint right);
         Uint  glyph_index(char32_t codepoint);
+
         auto  metrics()              -> FaceMetrics;
         auto  build_glyph(Uint code) -> GlyphMetrics;
         auto  render_glyph(
