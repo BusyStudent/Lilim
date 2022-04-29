@@ -7,8 +7,10 @@
 
 #ifdef FONS_SDL_RENDERER
 
-#if    FONS_CLEARTYPE
-    #error "SDL Backend unsupport FONS_CLEARTYPE"
+#if    FONS_CLEARTYPE && defined(__GNUC__)
+    #warning "Current FONS_CLEARTYPE is experimental"
+#elif  FONS_CLEARTYPE && defined(_MSC_VER)
+    #pragma message("Current FONS_CLEARTYPE is experimental")
 #endif
 
 #if    SDL_VERSION_ATLEAST(2,0,10)
@@ -53,12 +55,19 @@ inline SDLTextRenderer::SDLTextRenderer(SDL_Renderer *r,Fontstash &m,int w,int h
     //     w,
     //     h
     // );
+    // Uint32 fmt = SDL_MasksToPixelFormatEnum(
+    //     32,
+    //     0xFF000000,
+    //     0x00FF0000,
+    //     0x0000FF00,
+    //     0x00000000
+    // );
     // format = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA32);
     // SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);
 }
 inline SDLTextRenderer::~SDLTextRenderer(){
     // SDL_DestroyTexture(texture);
-    // SDL_FreeFormat(format);
+    SDL_FreeFormat(format);
 }
 inline void SDLTextRenderer::render_update(int x,int y,int w,int h){
     //Nothing to do
@@ -87,7 +96,7 @@ inline void SDLTextRenderer::render_draw(const Vertex *vertices,int nvertices){
     for(int n = 0;n < nvertices;n++){
         const Vertex &vert = vertices[n];
 
-        uint8_t *src = static_cast<uint8_t*>(tex);
+        Pixel *src = static_cast<Pixel*>(tex);
         //Unpack color by RRGGBBAA
         uint8_t r = (vert.c >> 24) & 0xFF;
         uint8_t g = (vert.c >> 16) & 0xFF;
@@ -96,15 +105,29 @@ inline void SDLTextRenderer::render_draw(const Vertex *vertices,int nvertices){
         //For this glyph and draw point
         for(int y = 0;y < vert.glyph_h;y++){
             for(int x = 0;x < vert.glyph_w;x++){
-                uint8_t pixel = src[((y + vert.glyph_y) * tex_w) + (x + vert.glyph_x)];
+                Pixel pixel = src[((y + vert.glyph_y) * tex_w) + (x + vert.glyph_x)];
 
                 if(pixel == 0){
                     continue;
                 }
                 //Zero is transparent,if not,draw it
-                uint8_t alpha = a * float(pixel) / 255.0f;
+#if FONS_CLEARTYPE
+                //TODO : ClearType(This version works bad on Black Color)
+                //Unpack ClearType pixels to three GrayScale
+                float ra = (pixel >> 24) & 0xFF;
+                float ga = (pixel >> 16) & 0xFF;
+                float ba = (pixel >> 8) & 0xFF;
 
+                uint8_t new_r = (r * ra) / 255;
+                uint8_t new_g = (g * ga) / 255;
+                uint8_t new_b = (b * ba) / 255;
+
+                SDL_SetRenderDrawColor(renderer,new_r,new_g,new_b,a);
+#else
+                //Gray scale mode
+                uint8_t alpha = a * float(pixel) / 255.0f;
                 SDL_SetRenderDrawColor(renderer,r,g,b,alpha);
+#endif
                 SDL_RenderDrawPoint(renderer,vert.screen_x + x,vert.screen_y + y);
             }
         }
@@ -215,5 +238,19 @@ FONS_NS_END
 
 //Cleanup
 #undef SDL_RenderDrawPoint
+
+#endif
+
+
+#ifdef FONS_GL_RENDERER
+
+FONS_NS_BEGIN
+
+class GLTextRenderer : public TextRenderer {
+    private:
+        GLuint vbo;
+};
+
+FONS_NS_END
 
 #endif

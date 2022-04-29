@@ -13,7 +13,7 @@
 #ifdef FONS_NDEBUG
     #define FONS_LOG(...)
 #else
-    #define FONS_LOG(...) \ 
+    #define FONS_LOG(...) \
     {\
         printf("[%s:%s:%d] ",__FILE__,__FUNCTION__,__LINE__);\
         printf(__VA_ARGS__);\
@@ -391,6 +391,7 @@ class TextRenderer : protected Context {
 
         void flush();
         void draw_text(float x,float y,const char *text,const char *end = nullptr);
+        void draw_vtext(float x,float y,const char *fmt,...);
 
         //Atlas operations
         void expand(int width,int height);
@@ -410,6 +411,9 @@ class TextRenderer : protected Context {
         void add_vert(const Vertex &vert);
 
         std::vector<Vertex> vertices;
+        //Buffer for draw_vfmt
+        char  *text_buffer = nullptr;
+        size_t text_length = 0;
 };
 #endif
 

@@ -441,7 +441,7 @@ void Context::dump_info(FILE *fp){
     fprintf(fp,"    States:\n");
     fprintf(fp,"        font => %d\n",states.top().font);
     fprintf(fp,"        size => %f\n",states.top().size);
-    fprintf(fp,"        blur => %f\n",states.top().blur);
+    fprintf(fp,"        blur => %d\n",states.top().blur);
     fprintf(fp,"        align => %d\n",states.top().align);
     fprintf(fp,"        spacing => %f\n",states.top().spacing);
     //If has dirty rect dump it
@@ -744,7 +744,7 @@ TextRenderer::TextRenderer(Fontstash &s,int w,int h):Context(s,w,h){
     },this);
 }
 TextRenderer::~TextRenderer(){
-
+    manager()->free(text_buffer);
 }
 void TextRenderer::draw_text(float x,float y,const char *str,const char *end){
     if(end == nullptr){
@@ -842,6 +842,45 @@ void TextRenderer::flush(){
         vertices.clear();
     }
 }
+void TextRenderer::draw_vtext(float x,float y,const char *fmt,...){
+    if(fmt == nullptr){
+        return;
+    }
+    size_t req_size;
+    va_list args;
+    va_start(args,fmt);
+#ifdef _WIN32
+    req_size = _vscprintf(fmt,args);
+#else
+    req_size = vsnprintf(nullptr,0,fmt,args);
+#endif
+    va_end(args);
+
+    //Allocate buffer if needed
+    if(req_size > text_length){
+        text_buffer = static_cast<char*>(manager()->realloc(
+            text_buffer,
+            req_size + 1
+        ));
+        text_length = req_size;
+    }
+    else if(req_size < text_length / 2){
+        //Decrease buffer size
+        text_buffer = static_cast<char*>(manager()->realloc(
+            text_buffer,
+            text_length / 2 + 1
+        ));
+        text_length /= 2;
+    }
+
+    va_start(args,fmt);
+    vsprintf(text_buffer,fmt,args);
+    va_end(args);
+
+    //Draw
+    draw_text(x,y,text_buffer,text_buffer + req_size);
+}
+
 void TextRenderer::add_vert(const Vertex &vert){
     vertices.push_back(vert);
 }

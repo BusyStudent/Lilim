@@ -29,8 +29,13 @@
     static void  _lilim_free  (void *ptr,void *up){
         return static_cast<LILIM_NAMESPACE::Manager*>(up)->free(ptr);
     }
+    
+    //Include headers
+    #ifndef LILIM_STBTRUETYPE_H
+        #define LILIM_STBTRUETYPE_H "stb_truetype.h"
+    #endif
 
-    #include "stb_truetype.h"
+    #include LILIM_STBTRUETYPE_H
     #include <cmath>
 
     //Replace some Freetype Function
@@ -271,7 +276,7 @@ void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
 #else
 //Stb TrueType  Face
 Face::Face(){
-    flags = 0;
+    flags   = 0;
     manager = nullptr;
     face    = nullptr;
     xdpi    = 0;
@@ -291,6 +296,10 @@ void  Face::set_size(Uint size){
     s.xdpi = xdpi ? xdpi : 72;
     s.ydpi = ydpi ? ydpi : 72;
 
+    //Process size by dpi
+    s.width  *= s.xdpi / 72;
+    s.height *= s.ydpi / 72;
+
     face->size = s;
 }
 Uint  Face::glyph_index(char32_t codepoint){
@@ -308,6 +317,8 @@ auto  Face::metrics() -> FaceMetrics{
     float scale = stbtt_ScaleForPixelHeight(face,face->size.height);
     stbtt_GetFontVMetrics(face,&ascender,&descender,&linegap);
     //Scale it by size
+    scale *= face->size.ydpi / 72.0f;
+
     metrics.ascender    = std::ceil(ascender * scale);
     metrics.descender   = std::ceil(descender * scale);
     metrics.height      = std::ceil((ascender - descender) * scale);
@@ -323,7 +334,7 @@ auto  Face::build_glyph(Uint code) -> GlyphMetrics{
     int lsb;
     int x0,y0,x1,y1;
     float yscale = stbtt_ScaleForPixelHeight(face,face->size.height);
-    float xscale = stbtt_ScaleForPixelHeight(face,face->size.height);
+    float xscale = stbtt_ScaleForPixelHeight(face,face->size.width);
     //Process with dpi
     yscale *= face->size.ydpi / 72.0f;
     xscale *= face->size.xdpi / 72.0f;
@@ -342,7 +353,7 @@ auto  Face::build_glyph(Uint code) -> GlyphMetrics{
 void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
     int x0,y0,x1,y1;
     float yscale = stbtt_ScaleForPixelHeight(face,face->size.height);
-    float xscale = stbtt_ScaleForPixelHeight(face,face->size.height);
+    float xscale = stbtt_ScaleForPixelHeight(face,face->size.width);
     //Process with dpi
     yscale *= face->size.ydpi / 72.0f;
     xscale *= face->size.xdpi / 72.0f;
@@ -363,8 +374,8 @@ void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
         width,
         height,
         stride,
-        scale,
-        scale,
+        xscale,
+        yscale,
         code
     );
 }

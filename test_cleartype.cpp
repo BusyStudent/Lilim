@@ -3,8 +3,8 @@
 #include <SDL2/SDL.h>
 
 #include <iostream>
-#include "fontstash.cpp"
 #include "lilim.cpp"
+#include "fontstash.cpp"
 
 #ifdef _WIN32
     #define FONT_FILE "C:/Windows/Fonts/msyh.ttc"

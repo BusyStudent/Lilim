@@ -1,7 +1,6 @@
 #include <SDL2/SDL.h>
 #define LILIM_STATIC
 #define FONS_STATIC
-#include "lilim.hpp"
 #include "lilim.cpp"
 #include "fontstash.cpp"
 
@@ -51,10 +50,12 @@ int main(){
     // std::cout << "w:" << fsize.width << " h:" << fsize.height << std::endl;
 
     //Create a window / renderer
-    SDL_Window *window = SDL_CreateWindow("Hello World!", 0, 0, 640, 480, SDL_WINDOW_SHOWN);
+    SDL_Window *window = SDL_CreateWindow("Hello World!", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_RESIZABLE);
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
     auto context = new Fons::SDLTextRenderer(renderer,stash,640,480);
+
+    //FIXME : When Font size is 27 or biger the text is not correct in windows 
 
     // context->add_font(id);
     float cur_size = 12;
@@ -96,23 +97,19 @@ int main(){
 
             context->flush();
             //Draw Detail info
-            char tmp_buf[256];
             SDL_Rect detail_rect = {
                 0,0,100,50
             };
             SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
             SDL_RenderFillRect(renderer,&detail_rect);
             //DRAW Info
-            sprintf(tmp_buf,"size:%d",int(cur_size));
             context->set_align(FONS_ALIGN_TOP | FONS_ALIGN_LEFT);
             context->set_color(0x000000FF);
             context->set_spacing(0);
             context->set_size(12);
 
-            context->draw_text(0,0,tmp_buf);
-
-            sprintf(tmp_buf,"spacing:%d",int(cur_spacing));
-            context->draw_text(0,20,tmp_buf);
+            context->draw_vtext(0,0,"size:%d",int(cur_size));
+            context->draw_vtext(0,20,"spacing:%d",int(cur_spacing));
 
             context->flush();
 

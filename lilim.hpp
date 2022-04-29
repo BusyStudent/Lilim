@@ -191,7 +191,8 @@ class MemHandler {
 class Manager {
     public:
         Manager();
-        Manager(const Manager &) = delete;
+        Manager(const MemHandler &);
+        Manager(const Manager    &) = delete;
         ~Manager();
 
         Ref<Face> new_face(Ref<Blob> blob,int index);
@@ -207,8 +208,12 @@ class Manager {
         T        *alloc (){
             return static_cast<T*>(malloc(sizeof(T)));
         }
+
+        FT_Library native_handle() const{
+            return library;
+        }
     private:
-        FT_Library library;        
+        FT_Library library;
         MemHandler memory;
 };
 
@@ -362,9 +367,9 @@ LILIM_NS_END
 #endif
 
 #ifndef _LILIM_SOURCE_
-    #define LILIM_HANDLE(X) typedef struct _Lilim_##X *Lilim_##X
+    #define LILIM_HANDLE(X) typedef struct _Lilim_##X  *Lilim_##X
 #else
-    #define LILIM_HANDLE(X) typedef LILIM_NAMESPACE::X Lilim_##X
+    #define LILIM_HANDLE(X) typedef LILIM_NAMESPACE::X *Lilim_##X
 #endif
 
 LILIM_HANDLE (Manager);

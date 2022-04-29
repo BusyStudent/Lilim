@@ -16,6 +16,13 @@ if has_config("memcheck") then
     add_links("asan")
 end
 
+if is_plat("windows") then 
+    --Let it use UTF-8
+    add_cxxflags("/utf-8")
+    add_cxxflags("/Zc:__cplusplus")
+    add_cflags("/utf-8")    
+end
+
 target("Lilim")
     set_kind("static")
     add_files("lilim.cpp")

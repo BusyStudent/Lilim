@@ -51,5 +51,4 @@ int main(){
 
 - [ ] Add harfbuzz support.
 - [ ] Add Embedded bitmap font support.
-- [ ] Add fallback support.  
-- [ ] Add stb_truetype support.
+- [ ] Improve LCD Rendering mode support.  
