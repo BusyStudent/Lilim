@@ -58,68 +58,40 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
         return nullptr;
     }
 
-    Glyph *g = nullptr;
-    Uint idx = face->glyph_index(param.codepoint);
+    Glyph *g    = nullptr;
+    Face  *face = nullptr;
+    Uint   idx  = 0;
     auto stash = param.context->stash;
     auto ctxt  = param.context;
 
-    if(idx == 0){
-        //No glyph, try fallbacks
-        for(auto iter = fallbacks.begin();iter != fallbacks.end();){
-            Font *f = stash->get_font(*iter);
-            if(f == nullptr){
-                //Unexisting font
-                iter = fallbacks.erase(iter);
-                continue;
-            }
-            idx = f->face->glyph_index(param.codepoint);
-            if(idx != 0){
-                return f->get_glyph(param,req_bitmap);
-            }
-            ++iter;
-        }
-        //Oh,no.try callback
-        if(stash->get_fallback != nullptr){
-            Font *f = stash->get_fallback(param.codepoint);
-            if(f != nullptr && f != this){
-                //Add it to fallbacks
-                fallbacks.push_back(f->get_id());
-                return f->get_glyph(param,req_bitmap);
-            }
-        }
-        //Still no glyph, return empty glyph
-    }
-
     //find existing glyph
-    auto iter = glyphs.find(param.codepoint);
-    auto num  = glyphs.count(param.codepoint);
-
-    while(num){
-        auto &glyph = iter->second;
-        
-        if(glyph.size == param.size && glyph.blur == param.blur){
-            
-            g = &glyph;
-            break;
-        }
-        num--;
-        iter++;
-    }
-
+    g = query_cache(param,req_bitmap);
+    
+    //No existing glyph, create one
     if(g == nullptr){
+        if(face == nullptr){
+            face = get_face(param.codepoint);
+            idx  = face->glyph_index(param.codepoint);
+        }
         //Get metrics
         face->set_size(param.size);
 
         Glyph glyph;
         auto m = face->build_glyph(idx);
 
-        static_cast<FontParams&>(glyph) = param;
+        //Set glyph info
         static_cast<GlyphMetrics&>(glyph) = m;
+        static_cast<FontParams&>(glyph) = param;
         //Insert
-        iter = glyphs.insert(std::make_pair(param.codepoint,glyph));
+        auto iter = glyphs.insert(std::make_pair(param.codepoint,glyph));
         g = &iter->second;
     }
+    //Require bitmap but not created
     if(req_bitmap && g->x < 0 && g->y < 0){
+        if(face == nullptr){
+            face = get_face(param.codepoint);
+            idx  = face->glyph_index(param.codepoint);
+        }
         //do render
         face->set_size(param.size);
 
@@ -154,7 +126,7 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
             //Sloved
             FONS_LOG("Success to slove atlas full");
         }
-
+        //Mark the glyph position in atlas
         g->x = x;
         g->y = y;
         //Rasterize
@@ -176,6 +148,74 @@ Glyph *Font::get_glyph(FontParams param,int req_bitmap){
         dirty[3] = std::max(dirty[3],y + g->height);
     }
     return g;
+}
+Face *Font::get_face(char32_t codepoint){
+    Uint idx = face->glyph_index(codepoint);
+    if(idx != 0){
+        //Self has the glyph
+        return face.get();
+    }
+    //Query fallback
+    for(auto iter = fallbacks.begin();iter != fallbacks.end();){
+        Font *f = stash->get_font(*iter);
+        if(f == nullptr){
+            //Unexisting font
+            iter = fallbacks.erase(iter);
+            continue;
+        }
+        idx = f->face->glyph_index(codepoint);
+        if(idx != 0){
+            //Found font has this glyph
+            return f->face.get();
+        }
+        ++iter;
+    }
+    //Oh,no.try callback
+    if(stash->get_fallback != nullptr){
+        Font *f = stash->get_fallback(codepoint);
+        if(f != nullptr && f != this){
+            //Add it to fallbacks,faster
+            fallbacks.push_back(f->get_id());
+            return f->face.get();
+        }
+    }
+    //Still no found :( ,use self
+    return face.get();
+}
+Glyph *Font::query_cache(FontParams param,int req_bitmap){
+    auto iter = glyphs.find(param.codepoint);
+    auto num  = glyphs.count(param.codepoint);
+
+    if(req_bitmap){
+        while(num){
+            auto &glyph = iter->second;
+            //Require bitmap,so we need check the blur and context 
+            //Make sure we doesnot mix different context
+            if(glyph.size == param.size && 
+               glyph.blur == param.blur && 
+               glyph.context == param.context){
+                //Found
+                return &glyph;
+            }
+            --num;
+            ++iter;
+        }
+    }
+    else{
+        //No bitmap required,just check size
+        while(num){
+            auto &glyph = iter->second;
+            
+            if(glyph.size == param.size){
+                //Found
+                return &glyph;
+            }
+            --num;
+            ++iter;
+        }
+    }
+    //Not found
+    return nullptr;
 }
 //Clear cache of specified context
 void Font::clear_cache_of(Context *ctxt){
@@ -286,12 +326,11 @@ Size Context::measure_text(const char *str,const char *end){
         FontParams param;
         param.context = this;
         param.codepoint = c;
-        param.spacing = states.top().spacing;
         param.size = states.top().size;
         param.blur = states.top().blur;
         //Kerning / Spacing
         if(!first){
-            size.width += font->kerning(prev,c);
+            size.width += font->kerning(param.size,prev,c);
             size.width += states.top().spacing;
         }
         else{
@@ -677,8 +716,19 @@ void Context::reset_atlas(int w,int h){
     dirty_rect[3] = 0;
 
     //TODO Reset Glyph in owned font
+    //Robustness: Get current draw font and reset it
+    int id  = states.top().font;
+    Font *ft = stash->get_font(id);
+    if(ft != nullptr){
+            ft->clear_cache_of(this);
+    }
+
     for(auto &f:fonts){
         Font *font = f.get();
+        if(font == ft){
+            //Already reset , skip :)
+            continue;
+        }
         font->clear_cache_of(this);
     }
 }
@@ -775,12 +825,11 @@ void TextRenderer::draw_text(float x,float y,const char *str,const char *end){
         FontParams param;
         param.context = this;
         param.codepoint = c;
-        param.spacing = states.top().spacing;
         param.size = states.top().size;
         param.blur = states.top().blur;
         //Kerning / Spacing
         if(!first){
-            x += font->kerning(prev,c);
+            x += font->kerning(param.size,prev,c);
             x += states.top().spacing;
         }
         else{
@@ -962,16 +1011,18 @@ bool TextIter::to_next(Quad *quad){
     params.blur = iblur;
     params.size = isize;
     params.context = context;
-    params.spacing = spacing;
 
     glyph = font->get_glyph(params,bitmapOption);
     if(glyph == nullptr){
-        return false;
+        //No glyph :(
+        //Accroding to orginal code,we should set prev into -1
+        prevGlyphIndex = -1;
+        return true;
     }
 
     if(prevGlyphIndex != -1){
         //Add kerning and spacing
-        nextx  += font->kerning(prevGlyphIndex,ch);
+        nextx  += font->kerning(params.size,prevGlyphIndex,ch);
         nextx  += spacing;
     }
     prevGlyphIndex = ch;
@@ -1124,11 +1175,22 @@ FONS_CAPI(int          ) fonsGetFontByName(FONScontext *s,const char* name){
     }
     return font->get_id();
 }
-FONS_CAPI(int          ) fonsAddFallbackFont(FONScontext *s,const char* name,int fontindex){
-    return false;
+FONS_CAPI(int          ) fonsAddFallbackFont(FONScontext *s,int font,int fontindex){
+    auto stash = s->fontstash();
+    auto f = stash->get_font(font);
+    if(f == nullptr){
+        return false;
+    }
+    f->add_fallback(fontindex);
+    return true;
 }
 FONS_CAPI(void         ) fonsResetFallbackFont(FONScontext *s,int font){
-    return;
+    auto stash = s->fontstash();
+    auto f = stash->get_font(font);
+    if(f == nullptr){
+        return;
+    }
+    f->reset_fallbacks();
 }
 
 // Measure Text

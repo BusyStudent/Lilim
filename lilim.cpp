@@ -43,7 +43,9 @@
     #define FT_Done_FreeType(a)
 
     struct _lilim_fontinfo : stbtt_fontinfo {
-        LILIM_NAMESPACE::FaceSize size;
+        //Scale for current size
+        float xscale;
+        float yscale;
     };
 
 #endif
@@ -136,6 +138,7 @@ Face::Face(){
     flags = FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT;
     manager = nullptr;
     face    = nullptr;
+    styles  = 0;
     xdpi    = 0;
     ydpi    = 0;
     idx     = 0;
@@ -287,26 +290,38 @@ Face::~Face(){
     manager->free(face);
 }
 void  Face::set_size(FaceSize size){
-    face->size = size;
+    //Process width / height by DPI
+    size.xdpi = size.xdpi ? size.xdpi : 72;
+    size.ydpi = size.ydpi ? size.ydpi : 72;
+
+    size.width *= size.xdpi / 72.0f;
+    size.height *= size.ydpi / 72.0f;
+
+    float xscale = stbtt_ScaleForPixelHeight(face,size.width);
+    float yscale = stbtt_ScaleForPixelHeight(face,size.height);
+
+    xscale  *= size.xdpi / 72.0f;
+    yscale  *= size.ydpi / 72.0f;
+
+    face->xscale = xscale;
+    face->yscale = yscale;
 }
 void  Face::set_size(Uint size){
     FaceSize s;
     s.width = size;
     s.height = size;
-    s.xdpi = xdpi ? xdpi : 72;
-    s.ydpi = ydpi ? ydpi : 72;
+    s.xdpi = xdpi;
+    s.ydpi = ydpi;
 
-    //Process size by dpi
-    s.width  *= s.xdpi / 72;
-    s.height *= s.ydpi / 72;
-
-    face->size = s;
+    set_size(s);
 }
 Uint  Face::glyph_index(char32_t codepoint){
     return stbtt_FindGlyphIndex(face,codepoint);
 }
 Int   Face::kerning(Uint prev,Uint cur){
-    return stbtt_GetGlyphKernAdvance(face,prev,cur);
+    return 0;
+    //FIXME : Kerning bug in big size font
+    // return stbtt_GetGlyphKernAdvance(face,prev,cur) * face->xscale;
 }
 auto  Face::metrics() -> FaceMetrics{
     FaceMetrics metrics;
@@ -314,14 +329,12 @@ auto  Face::metrics() -> FaceMetrics{
     int ascender;
     int descender;
     int linegap;
-    float scale = stbtt_ScaleForPixelHeight(face,face->size.height);
     stbtt_GetFontVMetrics(face,&ascender,&descender,&linegap);
     //Scale it by size
-    scale *= face->size.ydpi / 72.0f;
 
-    metrics.ascender    = std::ceil(ascender * scale);
-    metrics.descender   = std::ceil(descender * scale);
-    metrics.height      = std::ceil((ascender - descender) * scale);
+    metrics.ascender    = std::ceil(ascender * face->yscale);
+    metrics.descender   = std::ceil(descender * face->yscale);
+    metrics.height      = std::ceil((ascender - descender) * face->yscale);
     metrics.max_advance = -1; // Not supported
     metrics.underline_position = -1; // Not supported
     metrics.underline_thickness = -1; // Not supported
@@ -333,32 +346,22 @@ auto  Face::build_glyph(Uint code) -> GlyphMetrics{
     int advance;
     int lsb;
     int x0,y0,x1,y1;
-    float yscale = stbtt_ScaleForPixelHeight(face,face->size.height);
-    float xscale = stbtt_ScaleForPixelHeight(face,face->size.width);
-    //Process with dpi
-    yscale *= face->size.ydpi / 72.0f;
-    xscale *= face->size.xdpi / 72.0f;
 
     stbtt_GetGlyphHMetrics(face,code,&advance,&lsb);
-    stbtt_GetGlyphBitmapBox(face,code,xscale,yscale,&x0,&y0,&x1,&y1);
+    stbtt_GetGlyphBitmapBox(face,code,face->xscale,face->yscale,&x0,&y0,&x1,&y1);
 
     ret.width  = x1 - x0;
     ret.height = y1 - y0;
     ret.bitmap_left = x0;
     ret.bitmap_top  = -y0;
-    ret.advance_x   = advance * xscale;
+    ret.advance_x   = advance * face->xscale;
 
     return ret;
 }
 void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
     int x0,y0,x1,y1;
-    float yscale = stbtt_ScaleForPixelHeight(face,face->size.height);
-    float xscale = stbtt_ScaleForPixelHeight(face,face->size.width);
-    //Process with dpi
-    yscale *= face->size.ydpi / 72.0f;
-    xscale *= face->size.xdpi / 72.0f;
 
-    stbtt_GetGlyphBitmapBox(face,code,xscale,yscale,&x0,&y0,&x1,&y1);
+    stbtt_GetGlyphBitmapBox(face,code,face->xscale,face->yscale,&x0,&y0,&x1,&y1);
 
     int width  = x1 - x0;
     int height = y1 - y0;
@@ -374,8 +377,8 @@ void  Face::render_glyph(Uint code,void *b,int pitch,int pen_x,int pen_y){
         width,
         height,
         stride,
-        xscale,
-        yscale,
+        face->xscale,
+        face->yscale,
         code
     );
 }

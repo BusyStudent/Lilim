@@ -67,7 +67,7 @@ inline SDLTextRenderer::SDLTextRenderer(SDL_Renderer *r,Fontstash &m,int w,int h
 }
 inline SDLTextRenderer::~SDLTextRenderer(){
     // SDL_DestroyTexture(texture);
-    SDL_FreeFormat(format);
+    // SDL_FreeFormat(format);
 }
 inline void SDLTextRenderer::render_update(int x,int y,int w,int h){
     //Nothing to do
@@ -247,6 +247,9 @@ FONS_NS_END
 FONS_NS_BEGIN
 
 class GLTextRenderer : public TextRenderer {
+    public:
+        GLTextRenderer(Fontstash &m,int w = 512,int h = 512);
+        ~GLTextRenderer();
     private:
         GLuint vbo;
 };

@@ -47,8 +47,17 @@ int main(){
 
 ```
 
+## Portable  
+
+If you want to make them all into a file  
+Just run ```python3 make_all.py``` and you will got a file with all the source code.
+
 ## Todo List
 
 - [ ] Add harfbuzz support.
 - [ ] Add Embedded bitmap font support.
 - [ ] Improve LCD Rendering mode support.  
+
+## Fixme List
+
+- [ ] stb_truetype backend has some bugs(in kerning of big size).  

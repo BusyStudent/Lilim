@@ -35,6 +35,10 @@
     #include <cassert>
 #endif
 
+#ifndef LILIM_UNUSED
+    #define LILIM_UNUSED(x) (void)(x)
+#endif
+
 #include <cstdlib>
 #include <cstdint>
 #include <cstdio>
@@ -133,9 +137,16 @@ class Ref {
         T *ptr = nullptr;
 };
 
-
+/**
+ * @brief The Finalizer to finalize a Blob
+ * 
+ */
 typedef void (*BlobFinalizer)(void *data,size_t size,void *user);
 
+/**
+ * @brief The Binary Object class 
+ * 
+ */
 class Blob: public Refable<Blob> {
     public:
         Blob() = default;
@@ -217,7 +228,10 @@ class Manager {
         MemHandler memory;
 };
 
-
+/**
+ * @brief The description of a glyph (scaled by size)
+ * 
+ */
 class GlyphMetrics {
     public:
         int width;
@@ -226,6 +240,10 @@ class GlyphMetrics {
         int bitmap_top;
         int advance_x;
 };
+/**
+ * @brief Size of a face (with dpi)
+ * 
+ */
 class FaceSize {
     public:
         float height = 0;
@@ -233,11 +251,19 @@ class FaceSize {
         float ydpi = 0;
         float xdpi = 0;
 };
+/**
+ * @brief Size
+ * 
+ */
 class Size {
     public:
         int width = 0;
         int height = 0;
 };
+/**
+ * @brief The description of a font face (scaled by size)
+ * 
+ */
 class FaceMetrics {
     public:
         float ascender = 0;
@@ -292,12 +318,33 @@ class Face: public Refable<Face> {
         void  set_size   (Uint     size);
         void  set_style  (Uint     style);
         void  set_flags  (Uint     flags);
-
+        /**
+         * @brief Get kerning of two glyphs
+         * 
+         * @param left The left glyph
+         * @param right The right glyph
+         * @return The kerning distance
+         */
         Int   kerning    (Uint left,Uint right);
+        /**
+         * @brief Convert a UTF32 codepoint to a glyph index
+         * 
+         * @param codepoint 
+         * @return Index (0 on not founded)
+         */
         Uint  glyph_index(char32_t codepoint);
 
         auto  metrics()              -> FaceMetrics;
         auto  build_glyph(Uint code) -> GlyphMetrics;
+        /**
+         * @brief Render a glyph at the given position
+         * 
+         * @param code The Glyph Index
+         * @param buffer The buffer to render to
+         * @param pitch The buffer pitch
+         * @param pen_x The pen x position
+         * @param pen_y The pen y position
+         */
         auto  render_glyph(
             Uint code,
             void *buffer,
@@ -305,8 +352,21 @@ class Face: public Refable<Face> {
             int pen_x,
             int pen_y
         ) -> void;
-
+        /**
+         * @brief Get Size of a string
+         * 
+         * @param text The UTF8 text begin
+         * @param end The UTF8 text end(nullptr on null terminated)
+         * @return Size 
+         */
         auto measure_text(const char *text,const char *end = nullptr) -> Size;
+        /**
+         * @brief Render a string
+         * 
+         * @param text The UTF8 text begin
+         * @param end The UTF8 text end(nullptr on null terminated)
+         * @return Bitmap 
+         */
         auto render_text(const char *text,const char *end = nullptr) -> Bitmap;
     private:
         Face();
@@ -314,6 +374,7 @@ class Face: public Refable<Face> {
         Manager  *manager;
         Ref<Blob> blob;
         FT_Face   face;
+        Uint      styles; // Style
         Uint      flags; // FT_LOAD_XXX
         Uint      xdpi; // DPI in set_size(Uint)
         Uint      ydpi; // DPI in set_size(Uint)
@@ -325,7 +386,20 @@ class Face: public Refable<Face> {
 inline int64_t  FixedFloor(int64_t x);
 inline int64_t  FixedCeil(int64_t x);
 //Utility
+/**
+ * @brief Decode UTF8 and move the pointer to the next char
+ * 
+ * @note It would change the input pointer
+ * @param str The pointer of the UTF8 string
+ * @return UTF32 codepoint
+ */
 extern char32_t  Utf8Decode(const char *&str);
+/**
+ * @brief Load a file from disk
+ * 
+ * @param path The UTF8 file path
+ * @return Ref<Blob> (empty on error)
+ */
 extern Ref<Blob> MapFile(const char *path);
 
 //Inline implement
@@ -382,12 +456,14 @@ LILIM_CAPI(void         ) Lilim_DestroyManager(Lilim_Manager manager);
 
 //Face
 LILIM_CAPI(Lilim_Face   ) Lilim_NewFace(Lilim_Manager manager,Lilim_Blob blob,int index);
+LILIM_CAPI(Lilim_Face   ) Lilim_RefFace(Lilim_Face face);
 LILIM_CAPI(Lilim_Face   ) Lilim_CloneFace(Lilim_Face face);
 LILIM_CAPI(void         ) Lilim_CloseFace(Lilim_Face face);
 
 //Blob
 LILIM_CAPI(Lilim_Blob   ) Lilim_MapData(const void *data,size_t size);
 LILIM_CAPI(Lilim_Blob   ) Lilim_MapFile(const char *path);
+LILIM_CAPI(Lilim_Blob   ) Lilim_RefBlob(Lilim_Blob blob);
 LILIM_CAPI(void         ) Lilim_FreeBlob(Lilim_Blob blob);
 
 //Cleanup
